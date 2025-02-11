@@ -1,0 +1,84 @@
+{
+    "scraping": {
+        "base_url": "https://steamcommunity.com/market/",
+        "max_retries": 10,
+        "min_delay": 1.0,
+        "max_delay": 2.0,
+        "user_agents": [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]
+    },
+    "analysis": {
+        "min_profit_margin": 10.0,
+        "max_price": 1000,
+        "min_price": 0.03,
+        "wear_ranges": {
+            "Factory New": [0.00, 0.07],
+            "Minimal Wear": [0.07, 0.15],
+            "Field-Tested": [0.15, 0.38],
+            "Well-Worn": [0.38, 0.45],
+            "Battle-Scarred": [0.45, 1.00]
+        },
+        "trade_up_rules": {
+            "max_items_per_contract": 10,
+            "min_float_difference": 0.001,
+            "max_float_difference": 0.1,
+            "rarity_levels": [
+                "Consumer Grade",
+                "Industrial Grade",
+                "Mil-Spec",
+                "Restricted",
+                "Classified",
+                "Covert"
+            ]
+        },
+        "market_trends": {
+            "price_history_days": 30,
+            "volume_threshold": 5,
+            "volatility_threshold": 0.15
+        }
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "tradeuptrends.log",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    },
+    "ui": {
+        "refresh_rate": 0.5,
+        "menu_transition_delay": 0.1,
+        "input_cooldown": 0.15,
+        "color_scheme": {
+            "primary": "blue",
+            "secondary": "cyan",
+            "accent": "green",
+            "warning": "yellow",
+            "error": "red",
+            "menu_selected": "bold cyan",
+            "menu_unselected": "white"
+        },
+        "display": {
+            "show_price_history": true,
+            "show_market_volume": true,
+            "show_trade_up_calculator": true,
+            "menu": {
+                "main": [
+                    "Analyze Market",
+                    "Find Trade-Up Contracts",
+                    "View Market History",
+                    "Settings",
+                    "Help",
+                    "Exit"
+                ],
+                "settings": [
+                    "Display Settings",
+                    "Analysis Settings",
+                    "Scraping Settings",
+                    "Back to Main Menu"
+                ]
+            }
+        }
+    }
+} 
