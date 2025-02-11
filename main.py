@@ -1,13 +1,17 @@
-from bs4 import BeautifulSoup
-from urllib.request import urlopen
+import bs4 
+import requests
+import re
+import httpx
+from scraper import Scraper
+from temp import items_dict
 
-url = "https://steamcommunity.com/market/search?q=&category_730_ItemSet%5B%5D=tag_set_baggage&category_730_ProPlayer%5B%5D=any&category_730_StickerCapsule%5B%5D=any&category_730_Tournament%5B%5D=any&category_730_TournamentTeam%5B%5D=any&category_730_Type%5B%5D=any&category_730_Weapon%5B%5D=any&appid=730"
-page = urlopen(url)
+def main():
+    #scrape for ak-47 listings
+    
+    url = "https://steamcommunity.com/market/"
+    
+    scraper = Scraper(url, items_dict)
+    items, prices = scraper.get_items("ak", )
 
-html = page.read().decode("utf-8")
-soup = BeautifulSoup(html, "html.parser")
-
-prices = soup.find_all('span', class_='normal_price')
-
-for price in prices:
-    print(price.text.strip())
+if __name__ == "__main__":
+    main()
