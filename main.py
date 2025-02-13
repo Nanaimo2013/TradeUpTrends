@@ -89,21 +89,19 @@ def main():
     logger = logging.getLogger(__name__)
     
     try:
-        # Initialize UI and tools
-        ui = ConsoleUI()
-        scraper = Scraper(config['scraping']['base_url'], items_dict)
-        calculator = TradeUpCalculator(config)
+        # Initialize UI with config
+        ui = ConsoleUI(config)
         
         # Run the main UI loop
         ui.run()
         
+    except KeyboardInterrupt:
+        logger.info("Application terminated by user")
+        sys.exit(0)
     except Exception as e:
         logger.exception("An error occurred during execution")
         print(f"\nError: {str(e)}")
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nGracefully shutting down...")
-        sys.exit(0)
 
 if __name__ == "__main__":
     main()

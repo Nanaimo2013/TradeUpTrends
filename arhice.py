@@ -97,9 +97,7 @@ class ConsoleUI:
                 self.layout,
                 console=self.console,
                 screen=True,
-                refresh_per_second=4,  # Increase refresh rate for smoother updates
-                auto_refresh=True,  # Enable auto refresh for consistent updates
-                transient=False  # Keep the display persistent
+                refresh_per_second=self.config['ui']['refresh_rate']
             ) as live:
                 self.live = live
                 
@@ -109,7 +107,6 @@ class ConsoleUI:
                 while self.running:
                     try:
                         current_time = time.time()
-                        needs_refresh = False
                         
                         # Handle keyboard input
                         if keyboard.is_pressed('ctrl+r') and current_time - self.last_key_time >= self.key_cooldown:
@@ -121,76 +118,87 @@ class ConsoleUI:
                         if keyboard.is_pressed('up') and current_time - self.last_key_time >= self.key_cooldown:
                             self.selected_index = max(0, self.selected_index - 1)
                             self.last_key_time = current_time
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
+                            self._refresh_menu()
                             
                         elif keyboard.is_pressed('down') and current_time - self.last_key_time >= self.key_cooldown:
                             menu_items = self.config['ui']['display']['menu'][self.current_menu]
                             self.selected_index = min(len(menu_items) - 1, self.selected_index + 1)
                             self.last_key_time = current_time
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
+                            self._refresh_menu()
                             
                         elif keyboard.is_pressed('enter') and current_time - self.last_key_time >= self.key_cooldown:
                             self.last_key_time = current_time
-                            needs_refresh = True
+                            menu_items = self.config['ui']['display']['menu'][self.current_menu]
+                            selected_item = menu_items[self.selected_index]
                             
-                            # Show processing message
-                            processing_panel = Panel(
-                                Text("Processing...", style="cyan"),
-                                title="Please Wait",
-                                border_style="blue"
-                            )
-                            self.layout["content"].update(processing_panel)
-                            live.refresh()  # Immediate refresh for processing message
-                            
-                            # Handle menu selection
-                            self._handle_menu_selection()
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
+                            if selected_item in ["Analyze Market", "Find Trade-Up Contracts"]:
+                                # Show processing message
+                                self._show_processing_panel(f"Starting {selected_item.lower()}...")
+                                
+                                # Handle long operation
+                                if selected_item == "Analyze Market":
+                                    self._analyze_market()
+                                else:
+                                    self._find_trade_up_contracts()
+                                    
+                                # Restore menu after operation
+                                self.current_menu = "main"
+                                self.selected_index = 0
+                                self._refresh_all_panels()
+                            else:
+                                self._handle_menu_selection()
+                                self._refresh_all_panels()
                             
                         elif keyboard.is_pressed('esc') and current_time - self.last_key_time >= self.key_cooldown:
                             self.last_key_time = current_time
-                            needs_refresh = True
                             
                             if self.current_menu == "main":
-                                try:
-                                    if self.confirm_action("Are you sure you want to exit?"):
-                                        self.running = False
-                                        break
-                                except (EOFError, KeyboardInterrupt):
-                                    self.running = False
+                                if self.confirm_action("Are you sure you want to exit?"):
+                                    self.shutdown()
                                     break
                             else:
                                 self.current_menu = "main"
                                 self.selected_index = 0
-                                self.layout["content"].update(self._create_menu_panel())
+                                self._refresh_menu()
                         
-                        # Only refresh if needed
-                        if needs_refresh:
-                            live.refresh()
-                        
-                        # Small sleep to reduce CPU usage
                         time.sleep(0.05)
                         
                     except KeyboardInterrupt:
-                        try:
-                            if self.confirm_action("Are you sure you want to exit?"):
-                                self.running = False
-                                break
-                        except (EOFError, KeyboardInterrupt):
-                            self.running = False
+                        if self.confirm_action("Are you sure you want to exit?"):
+                            self.shutdown()
                             break
                         
         except Exception as e:
             self.logger.exception("An error occurred in the main UI loop")
             self.show_error(f"An error occurred: {str(e)}")
         finally:
-            try:
-                if not self.shutting_down:
-                    self.shutdown()
-            except (EOFError, KeyboardInterrupt):
-                pass
+            if not self.shutting_down:
+                self.shutdown()
+
+    def _refresh_menu(self):
+        """Refresh just the menu panel."""
+        if self.live and self.live.is_started:
+            self.layout["content"].update(self._create_menu_panel())
+            self.live.refresh()
+
+    def _refresh_all_panels(self):
+        """Refresh all panels in the layout."""
+        if self.live and self.live.is_started:
+            self.layout["header"].update(self._create_header())
+            self.layout["footer"].update(self._create_footer())
+            self.layout["sidebar"].update(self._create_stats_panel())
+            self.layout["content"].update(self._create_menu_panel())
+            self.live.refresh()
+
+    def _show_processing_panel(self, message: str):
+        """Show a processing message panel."""
+        if self.live and self.live.is_started:
+            self.layout["content"].update(Panel(
+                Text(message, style="cyan"),
+                title="Processing",
+                border_style="blue"
+            ))
+            self.live.refresh()
 
     def _handle_input(self):
         """Handle keyboard input."""
@@ -236,37 +244,63 @@ class ConsoleUI:
             elif selected_item == "Settings":
                 self.current_menu = "settings"
                 self.selected_index = 0
+                # Update both content and sidebar to ensure UI stays responsive
                 self.layout["content"].update(self._create_menu_panel())
+                self.layout["sidebar"].update(self._create_stats_panel())
+                if self.live and self.live.is_started:
+                    self.live.refresh()
             elif selected_item == "Analyze Market":
                 # Create a temporary panel to show we're starting analysis
-                self.layout["content"].update(Panel(
+                processing_panel = Panel(
                     Text("Starting market analysis...", style="cyan"),
                     title="Market Analysis",
                     border_style="blue"
-                ))
+                )
+                self.layout["content"].update(processing_panel)
+                if self.live and self.live.is_started:
+                    self.live.refresh()
                 
+                # Temporarily stop live display
+                if self.live and self.live.is_started:
+                    self.live.stop()
                 try:
                     self._analyze_market()
                 finally:
-                    self.current_menu = "main"
-                    self.selected_index = 0
-                    self.layout["content"].update(self._create_menu_panel())
-                    
+                    # Ensure we restart the live display and restore the menu
+                    if self.live:
+                        self.current_menu = "main"
+                        self.selected_index = 0
+                        self.layout["content"].update(self._create_menu_panel())
+                        self.layout["sidebar"].update(self._create_stats_panel())
+                        self.live.start()
+                        self.live.refresh()
+                        
             elif selected_item == "Find Trade-Up Contracts":
                 # Create a temporary panel to show we're starting analysis
-                self.layout["content"].update(Panel(
+                processing_panel = Panel(
                     Text("Starting trade-up contract analysis...", style="cyan"),
                     title="Trade-Up Analysis",
                     border_style="blue"
-                ))
+                )
+                self.layout["content"].update(processing_panel)
+                if self.live and self.live.is_started:
+                    self.live.refresh()
                 
+                # Temporarily stop live display
+                if self.live and self.live.is_started:
+                    self.live.stop()
                 try:
                     self._find_trade_up_contracts()
                 finally:
-                    self.current_menu = "main"
-                    self.selected_index = 0
-                    self.layout["content"].update(self._create_menu_panel())
-                    
+                    # Ensure we restart the live display and restore the menu
+                    if self.live:
+                        self.current_menu = "main"
+                        self.selected_index = 0
+                        self.layout["content"].update(self._create_menu_panel())
+                        self.layout["sidebar"].update(self._create_stats_panel())
+                        self.live.start()
+                        self.live.refresh()
+                        
             elif selected_item == "Help":
                 self.show_help()
         elif self.current_menu == "settings":
@@ -281,6 +315,10 @@ class ConsoleUI:
             self._handle_proxy_settings()
         elif self.current_menu == "ui_settings":
             self._handle_ui_settings()
+
+        # Always ensure the UI is refreshed after any menu action
+        if self.live and self.live.is_started:
+            self.live.refresh()
 
     def _handle_settings_menu(self):
         """Handle settings menu selection."""
@@ -765,7 +803,8 @@ class ConsoleUI:
         controls = [
             "[blue]↑/↓[/blue]: Navigate",
             "[blue]Enter[/blue]: Select",
-            "[blue]Esc[/blue]: Back/Exit"
+            "[blue]Esc[/blue]: Back/Exit",
+            "[blue]Ctrl+R[/blue]: Refresh UI"
         ]
         return Panel(
             Text(" | ".join(controls), justify="center"),
@@ -1256,6 +1295,9 @@ class ConsoleUI:
 
     def _find_trade_up_contracts(self):
         """Handle trade-up contract analysis workflow."""
+        if self.live and self.live.is_started:
+            self.live.stop()
+            
         try:
             if not self.scraper:
                 from scraper import Scraper
@@ -1267,6 +1309,8 @@ class ConsoleUI:
                 self.calculator = TradeUpCalculator(self.config)
 
             # Get weapon selection
+            if self.live:
+                self.live.start()
             weapon = self.get_weapon_selection(self.scraper.items_dict)
             if not weapon:
                 return
@@ -1283,14 +1327,12 @@ class ConsoleUI:
 
             # Show initial progress message
             self._show_processing_panel(f"Scraping {weapon.upper()} market data...")
-            if self.live:
-                self.live.refresh()
             
-            # Create progress bar
-            progress = self.create_progress_bar()
-            scraping_task = progress.add_task(f"Scraping {weapon.upper()}...", total=100)
-            
-            # Scrape items with live UI updates
+            # Stop live display for the scraping operation
+            if self.live and self.live.is_started:
+                self.live.stop()
+
+            # Scrape items
             items = []
             for item in self.scraper.get_items(weapon):
                 items.append(item)
@@ -1302,20 +1344,20 @@ class ConsoleUI:
                 stats['avg_price'] = sum(prices) / len(prices)
                 stats['elapsed_time'] = str(datetime.timedelta(seconds=int(time.time() - start_time)))
                 stats['recent_items'] = items[-3:] if len(items) > 3 else items
-                
-                # Update progress bar and stats
-                progress.update(scraping_task, advance=1)
-                self.update_scraping_stats(stats)
-                if self.live:
-                    self.live.refresh()
 
             # Show analysis progress message
-            self._show_processing_panel("Analyzing trade-up opportunities...")
             if self.live:
-                self.live.refresh()
+                self.live.start()
+            self._show_processing_panel("Analyzing trade-up opportunities...")
+            if self.live and self.live.is_started:
+                self.live.stop()
 
             # Find trade-up opportunities
             opportunities = self.calculator.find_trade_up_opportunities(items)
+
+            # Restart live display for showing results
+            if self.live:
+                self.live.start()
 
             # Display opportunities
             self.display_trade_up_opportunities(opportunities)
@@ -1339,6 +1381,9 @@ class ConsoleUI:
         finally:
             self.current_menu = "main"
             self.selected_index = 0
+            # Ensure live display is restarted
+            if self.live and not self.live.is_started:
+                self.live.start()
             self._refresh_all_panels()
 
     def _analyze_market(self):
@@ -1377,22 +1422,7 @@ class ConsoleUI:
 
             # Create progress display
             progress_panel = Panel(
-                Group(
-                    Text("Starting market analysis...", style="cyan"),
-                    Progress(
-                        SpinnerColumn(),
-                        TextColumn("[progress.description]{task.description}"),
-                        BarColumn(bar_width=40),
-                        TaskProgressColumn(),
-                        TimeRemainingColumn(),
-                        expand=True
-                    ),
-                    Text("\nScraping Statistics:", style="bold cyan"),
-                    Text("Pages Processed: 0", style="green"),
-                    Text("Items Found: 0", style="yellow"),
-                    Text("Average Price: $0.00", style="blue"),
-                    Text("Time Elapsed: 0:00", style="magenta")
-                ),
+                Text("Starting market analysis...", style="cyan"),
                 title="Market Analysis Progress",
                 border_style="blue"
             )
@@ -1404,20 +1434,8 @@ class ConsoleUI:
             items = self.scraper.get_items(weapon)
             
             if items:
-                # Show market analysis with graphs
+                # Show market analysis
                 self.show_market_analysis(items)
-                
-                # Create and show price distribution graph
-                price_graph = self._create_price_distribution_graph(items)
-                self.layout["content"].update(Panel(price_graph, title="Price Distribution"))
-                if self.live:
-                    self.live.refresh()
-                
-                # Create and show wear distribution graph
-                wear_graph = self._create_wear_distribution_graph(items)
-                self.layout["sidebar"].update(Panel(wear_graph, title="Wear Distribution"))
-                if self.live:
-                    self.live.refresh()
                 
                 # Ask if user wants to continue
                 if not self.confirm_action("Would you like to analyze another weapon?"):
@@ -1435,78 +1453,6 @@ class ConsoleUI:
             self.current_menu = "main"
             self.selected_index = 0
 
-    def _create_price_distribution_graph(self, items: List[Dict[str, Any]]) -> Table:
-        """Create a visual price distribution graph."""
-        prices = [float(item["price"].replace("$", "").replace(",", "")) for item in items]
-        
-        # Create price ranges
-        ranges = {
-            "< $1": 0,
-            "$1 - $5": 0,
-            "$5 - $10": 0,
-            "$10 - $50": 0,
-            "$50 - $100": 0,
-            "> $100": 0
-        }
-        
-        # Count items in each range
-        for price in prices:
-            if price < 1:
-                ranges["< $1"] += 1
-            elif price < 5:
-                ranges["$1 - $5"] += 1
-            elif price < 10:
-                ranges["$5 - $10"] += 1
-            elif price < 50:
-                ranges["$10 - $50"] += 1
-            elif price < 100:
-                ranges["$50 - $100"] += 1
-            else:
-                ranges["> $100"] += 1
-                
-        # Create visual graph
-        max_count = max(ranges.values())
-        graph_width = 40
-        
-        table = Table(show_header=False, box=None)
-        for range_name, count in ranges.items():
-            bar_length = int((count / max_count) * graph_width)
-            bar = "█" * bar_length
-            percentage = (count / len(items)) * 100
-            table.add_row(
-                f"[cyan]{range_name:10}[/cyan]",
-                f"[blue]{bar}[/blue]",
-                f"[green]{count:3}[/green]",
-                f"[yellow]({percentage:5.1f}%)[/yellow]"
-            )
-            
-        return table
-
-    def _create_wear_distribution_graph(self, items: List[Dict[str, Any]]) -> Table:
-        """Create a visual wear distribution graph."""
-        wear_dist = {}
-        for item in items:
-            wear = item.get("wear", "Unknown")
-            wear_dist[wear] = wear_dist.get(wear, 0) + 1
-            
-        # Create visual graph
-        max_count = max(wear_dist.values())
-        graph_width = 20
-        
-        table = Table(show_header=False, box=None)
-        for wear, count in wear_dist.items():
-            bar_length = int((count / max_count) * graph_width)
-            bar = "█" * bar_length
-            percentage = (count / len(items)) * 100
-            table.add_row(
-                f"[cyan]{wear:15}[/cyan]",
-                f"[blue]{bar}[/blue]",
-                f"[green]{count:3}[/green]",
-                f"[yellow]({percentage:5.1f}%)[/yellow]"
-            )
-            
-        return table
-
     def shutdown(self):
         """Gracefully shutdown the application."""
         if self.shutting_down:
@@ -1514,57 +1460,51 @@ class ConsoleUI:
             
         self.shutting_down = True
         
-        try:
-            # Show shutdown confirmation
+        # Show shutdown confirmation
+        if not self.confirm_action("Are you sure you want to exit?"):
+            self.shutting_down = False
+            return
+            
+        # Update UI to show shutdown status
+        shutdown_panel = Panel(
+            Group(
+                Text("\nShutting down gracefully...", style="yellow"),
+                Text("• Saving application state", style="cyan"),
+                Text("• Cleaning up resources", style="cyan"),
+                Text("• Closing connections", style="cyan")
+            ),
+            title="Shutdown in Progress",
+            border_style="yellow"
+        )
+        
+        self.layout["content"].update(shutdown_panel)
+        if self.live:
+            self.live.refresh()
+        
+        # Clean up resources
+        if self.scraper:
             try:
-                if not self.confirm_action("Are you sure you want to exit?"):
-                    self.shutting_down = False
-                    return
-            except (EOFError, KeyboardInterrupt):
+                self.scraper.close()  # Assuming scraper has a close method
+            except:
                 pass
                 
-            # Update UI to show shutdown status
-            shutdown_panel = Panel(
-                Group(
-                    Text("\nShutting down gracefully...", style="yellow"),
-                    Text("• Saving application state", style="cyan"),
-                    Text("• Cleaning up resources", style="cyan"),
-                    Text("• Closing connections", style="cyan")
-                ),
-                title="Shutdown in Progress",
-                border_style="yellow"
-            )
-            
-            self.layout["content"].update(shutdown_panel)
-            if self.live:
-                self.live.refresh()
-            
-            # Clean up resources
-            if self.scraper:
-                try:
-                    self.scraper.close()  # Assuming scraper has a close method
-                except:
-                    pass
-                    
-            if self.calculator:
-                try:
-                    self.calculator.close()  # Assuming calculator has a close method
-                except:
-                    pass
-            
-            # Final goodbye message
-            final_panel = Panel(
-                Text("\nThank you for using TradeUpTrends!\n", style="green"),
-                title="Goodbye",
-                border_style="green"
-            )
-            
-            self.layout["content"].update(final_panel)
-            if self.live:
-                self.live.refresh()
-                time.sleep(1)  # Give time to see the message
-                self.live.stop()
-            
-            self.running = False
-        except (EOFError, KeyboardInterrupt):
-            pass 
+        if self.calculator:
+            try:
+                self.calculator.close()  # Assuming calculator has a close method
+            except:
+                pass
+        
+        # Final goodbye message
+        final_panel = Panel(
+            Text("\nThank you for using TradeUpTrends!\n", style="green"),
+            title="Goodbye",
+            border_style="green"
+        )
+        
+        self.layout["content"].update(final_panel)
+        if self.live:
+            self.live.refresh()
+            time.sleep(1)  # Give time to see the message
+            self.live.stop()
+        
+        self.running = False 

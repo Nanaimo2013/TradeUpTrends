@@ -22,10 +22,11 @@ class ScraperException(Exception):
     pass
 
 class Scraper:
-    def __init__(self, url: str, items_dict: Dict[str, str]):
+    def __init__(self, url: str, items_dict: Dict[str, str], progress_callback=None):
         self.base_url = url
         self.items_dict = items_dict
         self.session = requests.Session()
+        self.progress_callback = progress_callback
         
         # Load configuration
         try:
