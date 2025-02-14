@@ -1,24 +1,37 @@
-from rich.console import Console, Group
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
-from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.console import Console
+from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.style import Style
+from rich.text import Text
 from rich.layout import Layout
 from rich.live import Live
-from rich.text import Text
-from rich import print as rprint
+from rich.align import Align
 from rich.markdown import Markdown
-from rich.syntax import Syntax
-from rich.columns import Columns
-from rich.style import Style
-from rich.rule import Rule
-import json
-import logging
-from typing import List, Dict, Any, Optional
+from rich.box import DOUBLE
+from rich.console import group
 from datetime import datetime
-from trade_up_calculator import TradeUpContract
+import logging
+import json
+from typing import Dict, Any, List, Generator
+from scraper import Scraper
+from trade_up_calculator import TradeUpCalculator, TradeUpContract
+import sys
+import os
 import time
-import keyboard
+import platform
+import winreg
+import subprocess
+import re
+from selenium import webdriver
+import undetected_chromedriver as uc
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 class ConsoleUI:
     def __init__(self, config=None):
@@ -29,1542 +42,1019 @@ class ConsoleUI:
         else:
             self.config = config
             
-        self.layout = self._create_layout()
-        self.items_analyzed = 0
-        self.current_menu = "main"
-        self.selected_index = 0
-        self.live = None
-        self.running = True
-        self.last_key_time = 0
-        self.key_cooldown = 0.15  # Cooldown between key presses
+        self.logger = logging.getLogger(__name__)
         self.scraper = None
         self.calculator = None
-        self.shutting_down = False
-        
-        # Initialize logging
-        self.logger = logging.getLogger(__name__)
-        
-        # Log startup configuration
-        if self.config.get('scraping', {}).get('use_vpn') is False:
-            self.logger.info("Running without VPN")
-        if self.config.get('scraping', {}).get('use_proxy') is False:
-            self.logger.info("Running without proxies")
-        if self.config.get('logging', {}).get('level') == 'DEBUG':
-            self.logger.info("Debug logging enabled")
-        
-    def _create_layout(self) -> Layout:
-        """Create the main layout for the application."""
-        layout = Layout(name="root")
-        
-        layout.split(
-            Layout(name="header", size=3),
-            Layout(name="main", ratio=1),
-            Layout(name="footer", size=3)
-        )
-        
-        layout["main"].split_row(
-            Layout(name="content", ratio=2),
-            Layout(name="sidebar", ratio=1),
-        )
-        
-        return layout
+        self.items_analyzed = 0
+        self.running = True
+        self._cleanup_in_progress = False  # Flag to prevent duplicate cleanup
 
-    def run(self):
-        """Main UI loop."""
-        try:
-            # Set up static UI elements once
-            title = Text("TradeUpTrends", style=f"bold {self.config['ui']['color_scheme']['primary']}")
-            subtitle = Text("CS2 Market Analysis Tool", style=f"italic {self.config['ui']['color_scheme']['secondary']}")
-            
-            header_content = Panel(
-                title + "\n" + subtitle,
-                border_style=self.config['ui']['color_scheme']['primary'],
-                padding=(1, 2),
-                title="Welcome"
-            )
-            
-            # Set up initial layout
-            self.layout["header"].update(header_content)
-            self.layout["footer"].update(self._create_footer())
-            self.layout["sidebar"].update(self._create_stats_panel())
-            self.layout["content"].update(self._create_menu_panel())
-            
-            # Clear screen once before starting Live display
-            self.console.clear()
-            
-            # Initialize Live display with proper configuration
-            with Live(
-                self.layout,
-                console=self.console,
-                screen=True,
-                refresh_per_second=4,  # Increase refresh rate for smoother updates
-                auto_refresh=True,  # Enable auto refresh for consistent updates
-                transient=False  # Keep the display persistent
-            ) as live:
-                self.live = live
-                
-                # Initial refresh to show the UI
-                live.refresh()
-                
-                while self.running:
-                    try:
-                        current_time = time.time()
-                        needs_refresh = False
-                        
-                        # Handle keyboard input
-                        if keyboard.is_pressed('ctrl+r') and current_time - self.last_key_time >= self.key_cooldown:
-                            self.last_key_time = current_time
-                            # Force refresh all UI elements
-                            self._refresh_all_panels()
-                            continue
-                            
-                        if keyboard.is_pressed('up') and current_time - self.last_key_time >= self.key_cooldown:
-                            self.selected_index = max(0, self.selected_index - 1)
-                            self.last_key_time = current_time
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
-                            
-                        elif keyboard.is_pressed('down') and current_time - self.last_key_time >= self.key_cooldown:
-                            menu_items = self.config['ui']['display']['menu'][self.current_menu]
-                            self.selected_index = min(len(menu_items) - 1, self.selected_index + 1)
-                            self.last_key_time = current_time
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
-                            
-                        elif keyboard.is_pressed('enter') and current_time - self.last_key_time >= self.key_cooldown:
-                            self.last_key_time = current_time
-                            needs_refresh = True
-                            
-                            # Show processing message
-                            processing_panel = Panel(
-                                Text("Processing...", style="cyan"),
-                                title="Please Wait",
-                                border_style="blue"
-                            )
-                            self.layout["content"].update(processing_panel)
-                            live.refresh()  # Immediate refresh for processing message
-                            
-                            # Handle menu selection
-                            self._handle_menu_selection()
-                            self.layout["content"].update(self._create_menu_panel())
-                            needs_refresh = True
-                            
-                        elif keyboard.is_pressed('esc') and current_time - self.last_key_time >= self.key_cooldown:
-                            self.last_key_time = current_time
-                            needs_refresh = True
-                            
-                            if self.current_menu == "main":
-                                try:
-                                    if self.confirm_action("Are you sure you want to exit?"):
-                                        self.running = False
-                                        break
-                                except (EOFError, KeyboardInterrupt):
-                                    self.running = False
-                                    break
-                            else:
-                                self.current_menu = "main"
-                                self.selected_index = 0
-                                self.layout["content"].update(self._create_menu_panel())
-                        
-                        # Only refresh if needed
-                        if needs_refresh:
-                            live.refresh()
-                        
-                        # Small sleep to reduce CPU usage
-                        time.sleep(0.05)
-                        
-                    except KeyboardInterrupt:
-                        try:
-                            if self.confirm_action("Are you sure you want to exit?"):
-                                self.running = False
-                                break
-                        except (EOFError, KeyboardInterrupt):
-                            self.running = False
-                            break
-                        
-        except Exception as e:
-            self.logger.exception("An error occurred in the main UI loop")
-            self.show_error(f"An error occurred: {str(e)}")
-        finally:
-            try:
-                if not self.shutting_down:
-                    self.shutdown()
-            except (EOFError, KeyboardInterrupt):
-                pass
-
-    def _handle_input(self):
-        """Handle keyboard input."""
-        current_time = time.time()
+    def show_welcome(self):
+        """Display welcome message and instructions."""
+        # Create title with gradient effect
+        title = Text()
+        title.append("✨ ", style="yellow")
+        title.append("T", style="cyan")
+        title.append("r", style="bright_cyan")
+        title.append("a", style="blue")
+        title.append("d", style="bright_blue")
+        title.append("e", style="purple")
+        title.append("U", style="bright_purple")
+        title.append("p", style="magenta")
+        title.append("T", style="bright_magenta")
+        title.append("r", style="red")
+        title.append("e", style="bright_red")
+        title.append("n", style="yellow")
+        title.append("d", style="bright_yellow")
+        title.append("s", style="green")
+        title.append(" ✨", style="bright_green")
         
-        if current_time - self.last_key_time < self.key_cooldown:
-            return
-            
-        needs_update = False
-        if keyboard.is_pressed('up'):
-            self.selected_index = max(0, self.selected_index - 1)
-            self.last_key_time = current_time
-            needs_update = True
-        elif keyboard.is_pressed('down'):
-            menu_items = self.config['ui']['display']['menu'][self.current_menu]
-            self.selected_index = min(len(menu_items) - 1, self.selected_index + 1)
-            self.last_key_time = current_time
-            needs_update = True
-        elif keyboard.is_pressed('enter'):
-            self._handle_menu_selection()
-            self.last_key_time = current_time
-            needs_update = True
-        elif keyboard.is_pressed('esc'):
-            if self.current_menu == "main":
-                self.running = False
-            else:
-                self.current_menu = "main"
-                self.selected_index = 0
-            self.last_key_time = current_time
-            needs_update = True
-            
-        if needs_update:
-            self.layout["content"].update(self._create_menu_panel())
-
-    def _handle_menu_selection(self):
-        """Handle menu item selection."""
-        menu_items = self.config['ui']['display']['menu'][self.current_menu]
-        selected_item = menu_items[self.selected_index]
+        # Create subtitle with animation effect
+        subtitle = Text("\n🎮 CS2 Market Analysis & Trade-Up Calculator", style="blue bold")
         
-        if self.current_menu == "main":
-            if selected_item == "Exit":
-                self.shutdown()
-            elif selected_item == "Settings":
-                self.current_menu = "settings"
-                self.selected_index = 0
-                self.layout["content"].update(self._create_menu_panel())
-            elif selected_item == "Analyze Market":
-                # Create a temporary panel to show we're starting analysis
-                self.layout["content"].update(Panel(
-                    Text("Starting market analysis...", style="cyan"),
-                    title="Market Analysis",
-                    border_style="blue"
-                ))
-                
-                try:
-                    self._analyze_market()
-                finally:
-                    self.current_menu = "main"
-                    self.selected_index = 0
-                    self.layout["content"].update(self._create_menu_panel())
-                    
-            elif selected_item == "Find Trade-Up Contracts":
-                # Create a temporary panel to show we're starting analysis
-                self.layout["content"].update(Panel(
-                    Text("Starting trade-up contract analysis...", style="cyan"),
-                    title="Trade-Up Analysis",
-                    border_style="blue"
-                ))
-                
-                try:
-                    self._find_trade_up_contracts()
-                finally:
-                    self.current_menu = "main"
-                    self.selected_index = 0
-                    self.layout["content"].update(self._create_menu_panel())
-                    
-            elif selected_item == "Help":
-                self.show_help()
-        elif self.current_menu == "settings":
-            self._handle_settings_menu()
-        elif self.current_menu == "scraping_settings":
-            self._handle_scraping_settings()
-        elif self.current_menu == "analysis_settings":
-            self._handle_analysis_settings()
-        elif self.current_menu == "vpn_settings":
-            self._handle_vpn_settings()
-        elif self.current_menu == "proxy_settings":
-            self._handle_proxy_settings()
-        elif self.current_menu == "ui_settings":
-            self._handle_ui_settings()
-
-    def _handle_settings_menu(self):
-        """Handle settings menu selection."""
-        menu_items = self.config['ui']['display']['menu']['settings']
-        selected_item = menu_items[self.selected_index]
-        
-        if selected_item == "Back to Main Menu":
-            self.current_menu = "main"
-            self.selected_index = 0
-        elif selected_item == "Scraping Settings":
-            self._handle_scraping_settings()
-        elif selected_item == "Analysis Settings":
-            self._handle_analysis_settings()
-        elif selected_item == "VPN Settings":
-            self._handle_vpn_settings()
-        elif selected_item == "Proxy Settings":
-            self._handle_proxy_settings()
-        elif selected_item == "UI Settings":
-            self._handle_ui_settings()
-
-    def _handle_scraping_settings(self):
-        """Handle scraping settings menu."""
-        settings_table = Table(show_header=False, box=None)
-        settings_table.add_row(
-            "Minimum Delay:",
-            f"[cyan]{self.config['scraping']['min_delay']}[/cyan] seconds"
-        )
-        settings_table.add_row(
-            "Maximum Delay:",
-            f"[cyan]{self.config['scraping']['max_delay']}[/cyan] seconds"
-        )
-        settings_table.add_row(
-            "Save Progress:",
-            f"[cyan]{str(self.config['scraping']['save_progress'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Request Timeout:",
-            f"[cyan]{self.config['scraping']['request_timeout']}[/cyan] seconds"
+        # Create description
+        description = Text(
+            "\n🚀 Your advanced tool for market analysis and profitable trade-up discoveries",
+            style="bright_blue"
         )
         
-        self.layout["content"].update(Panel(
-            Group(
-                settings_table,
-                Text("\nPress Enter to modify, Esc to go back", style="cyan")
-            ),
-            title="Scraping Settings",
-            border_style="blue"
-        ))
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input
-        while True:
-            if keyboard.is_pressed('enter'):
-                self._modify_scraping_settings()
-                break
-            elif keyboard.is_pressed('esc'):
-                break
-            time.sleep(0.05)
-            
-        self.current_menu = "settings"
-        self.selected_index = 0
-
-    def _modify_scraping_settings(self):
-        """Modify scraping settings."""
-        if self.live:
-            self.live.stop()
+        # Create sections
+        sections = [
+            Text("\n📋 [bold yellow]Instructions[/bold yellow]", justify="left"),
+            Text("1️⃣  Select a weapon by entering its index number", style="bright_white"),
+            Text("2️⃣  Choose analysis type (market analysis or trade-up contracts)", style="bright_white"),
+            Text("3️⃣  View results and statistics", style="bright_white"),
+            Text("\n⌨️  [bold yellow]Commands[/bold yellow]", justify="left"),
+            Text("• [cyan]exit[/cyan] - Quit the program", style="bright_white"),
+            Text("• [cyan]back[/cyan] - Return to previous menu", style="bright_white"),
+            Text("\n💡 [bold yellow]Pro Tips[/bold yellow]", justify="left"),
+            Text("🔹 Use index numbers for quick selection", style="bright_white"),
+            Text("🔹 Market analysis shows real-time prices", style="bright_white"),
+            Text("🔹 Trade-up analysis finds best opportunities", style="bright_white"),
+            Text("\n🛠️  [bold yellow]Features[/bold yellow]", justify="left"),
+            Text("⭐ Real-time market data analysis", style="bright_white"),
+            Text("⭐ Smart trade-up contract finder", style="bright_white"),
+            Text("⭐ Profit margin calculator", style="bright_white")
+        ]
         
-        try:
-            min_delay = float(Prompt.ask("Enter minimum delay (seconds)", default=str(self.config['scraping']['min_delay'])))
-            max_delay = float(Prompt.ask("Enter maximum delay (seconds)", default=str(self.config['scraping']['max_delay'])))
-            save_progress = Confirm.ask("Save progress?", default=self.config['scraping']['save_progress'])
-            timeout = int(Prompt.ask("Enter request timeout (seconds)", default=str(self.config['scraping']['request_timeout'])))
-            
-            # Update config
-            self.config['scraping']['min_delay'] = min_delay
-            self.config['scraping']['max_delay'] = max_delay
-            self.config['scraping']['save_progress'] = save_progress
-            self.config['scraping']['request_timeout'] = timeout
-            
-            # Save to file
-            with open('config.json', 'w') as f:
-                json.dump(self.config, f, indent=4)
-                
-            self.show_success("Settings updated successfully!")
-            
-        except Exception as e:
-            self.show_error(f"Error updating settings: {str(e)}")
-        finally:
-            if self.live:
-                self.live.start()
-
-    def _handle_analysis_settings(self):
-        """Handle analysis settings menu."""
-        settings_table = Table(show_header=False, box=None)
-        settings_table.add_row(
-            "Minimum Price:",
-            f"[cyan]${self.config['analysis']['min_price']}[/cyan]"
-        )
-        settings_table.add_row(
-            "Maximum Price:",
-            f"[cyan]${self.config['analysis']['max_price']}[/cyan]"
-        )
-        settings_table.add_row(
-            "Minimum Volume:",
-            f"[cyan]{self.config['analysis']['min_volume']}[/cyan]"
-        )
-        settings_table.add_row(
-            "Minimum Profit Margin:",
-            f"[cyan]{self.config['analysis']['min_profit_margin']}%[/cyan]"
-        )
-        
-        self.layout["content"].update(Panel(
-            Group(
-                settings_table,
-                Text("\nPress Enter to modify, Esc to go back", style="cyan")
-            ),
-            title="Analysis Settings",
-            border_style="blue"
-        ))
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input
-        while True:
-            if keyboard.is_pressed('enter'):
-                self._modify_analysis_settings()
-                break
-            elif keyboard.is_pressed('esc'):
-                break
-            time.sleep(0.05)
-            
-        self.current_menu = "settings"
-        self.selected_index = 1
-
-    def _modify_analysis_settings(self):
-        """Modify analysis settings."""
-        if self.live:
-            self.live.stop()
-        
-        try:
-            min_price = float(Prompt.ask("Enter minimum price ($)", default=str(self.config['analysis']['min_price'])))
-            max_price = float(Prompt.ask("Enter maximum price ($)", default=str(self.config['analysis']['max_price'])))
-            min_volume = int(Prompt.ask("Enter minimum volume", default=str(self.config['analysis']['min_volume'])))
-            min_profit = float(Prompt.ask("Enter minimum profit margin (%)", default=str(self.config['analysis']['min_profit_margin'])))
-            
-            # Update config
-            self.config['analysis']['min_price'] = min_price
-            self.config['analysis']['max_price'] = max_price
-            self.config['analysis']['min_volume'] = min_volume
-            self.config['analysis']['min_profit_margin'] = min_profit
-            
-            # Save to file
-            with open('config.json', 'w') as f:
-                json.dump(self.config, f, indent=4)
-                
-            self.show_success("Settings updated successfully!")
-            
-        except Exception as e:
-            self.show_error(f"Error updating settings: {str(e)}")
-        finally:
-            if self.live:
-                self.live.start()
-
-    def _handle_vpn_settings(self):
-        """Handle VPN settings menu."""
-        settings_table = Table(show_header=False, box=None)
-        vpn_settings = self.config['scraping']['vpn_settings']
-        settings_table.add_row(
-            "Use VPN:",
-            f"[cyan]{str(self.config['scraping']['use_vpn'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Auto Rotate:",
-            f"[cyan]{str(vpn_settings['auto_rotate'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Rotate Interval:",
-            f"[cyan]{vpn_settings['rotate_interval']}[/cyan] seconds"
-        )
-        settings_table.add_row(
-            "Preferred Locations:",
-            f"[cyan]{', '.join(vpn_settings['preferred_locations'])}[/cyan]"
-        )
-        
-        self.layout["content"].update(Panel(
-            Group(
-                settings_table,
-                Text("\nPress Enter to modify, Esc to go back", style="cyan")
-            ),
-            title="VPN Settings",
-            border_style="blue"
-        ))
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input
-        while True:
-            if keyboard.is_pressed('enter'):
-                self._modify_vpn_settings()
-                break
-            elif keyboard.is_pressed('esc'):
-                break
-            time.sleep(0.05)
-            
-        self.current_menu = "settings"
-        self.selected_index = 2
-
-    def _modify_vpn_settings(self):
-        """Modify VPN settings."""
-        if self.live:
-            self.live.stop()
-        
-        try:
-            use_vpn = Confirm.ask("Use VPN?", default=self.config['scraping']['use_vpn'])
-            auto_rotate = Confirm.ask("Auto rotate VPN?", default=self.config['scraping']['vpn_settings']['auto_rotate'])
-            rotate_interval = int(Prompt.ask(
-                "Enter rotation interval (seconds)",
-                default=str(self.config['scraping']['vpn_settings']['rotate_interval'])
-            ))
-            locations = Prompt.ask(
-                "Enter preferred locations (comma-separated)",
-                default=",".join(self.config['scraping']['vpn_settings']['preferred_locations'])
-            ).split(',')
-            
-            # Update config
-            self.config['scraping']['use_vpn'] = use_vpn
-            self.config['scraping']['vpn_settings']['auto_rotate'] = auto_rotate
-            self.config['scraping']['vpn_settings']['rotate_interval'] = rotate_interval
-            self.config['scraping']['vpn_settings']['preferred_locations'] = [loc.strip() for loc in locations]
-            
-            # Save to file
-            with open('config.json', 'w') as f:
-                json.dump(self.config, f, indent=4)
-                
-            self.show_success("VPN settings updated successfully!")
-            
-        except Exception as e:
-            self.show_error(f"Error updating VPN settings: {str(e)}")
-        finally:
-            if self.live:
-                self.live.start()
-
-    def _handle_proxy_settings(self):
-        """Handle proxy settings menu."""
-        settings_table = Table(show_header=False, box=None)
-        settings_table.add_row(
-            "Use Proxies:",
-            f"[cyan]{str(self.config['scraping']['use_proxy'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Minimum Working Proxies:",
-            f"[cyan]{self.config['scraping']['min_working_proxies']}[/cyan]"
-        )
-        settings_table.add_row(
-            "Check Interval:",
-            f"[cyan]{self.config['scraping']['proxy_check_interval']}[/cyan] seconds"
-        )
-        settings_table.add_row(
-            "Test Timeout:",
-            f"[cyan]{self.config['scraping']['proxy_test_timeout']}[/cyan] seconds"
-        )
-        
-        self.layout["content"].update(Panel(
-            Group(
-                settings_table,
-                Text("\nPress Enter to modify, Esc to go back", style="cyan")
-            ),
-            title="Proxy Settings",
-            border_style="blue"
-        ))
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input
-        while True:
-            if keyboard.is_pressed('enter'):
-                self._modify_proxy_settings()
-                break
-            elif keyboard.is_pressed('esc'):
-                break
-            time.sleep(0.05)
-            
-        self.current_menu = "settings"
-        self.selected_index = 3
-
-    def _modify_proxy_settings(self):
-        """Modify proxy settings."""
-        if self.live:
-            self.live.stop()
-        
-        try:
-            use_proxy = Confirm.ask("Use proxies?", default=self.config['scraping']['use_proxy'])
-            min_proxies = int(Prompt.ask(
-                "Enter minimum working proxies",
-                default=str(self.config['scraping']['min_working_proxies'])
-            ))
-            check_interval = int(Prompt.ask(
-                "Enter check interval (seconds)",
-                default=str(self.config['scraping']['proxy_check_interval'])
-            ))
-            test_timeout = int(Prompt.ask(
-                "Enter test timeout (seconds)",
-                default=str(self.config['scraping']['proxy_test_timeout'])
-            ))
-            
-            # Update config
-            self.config['scraping']['use_proxy'] = use_proxy
-            self.config['scraping']['min_working_proxies'] = min_proxies
-            self.config['scraping']['proxy_check_interval'] = check_interval
-            self.config['scraping']['proxy_test_timeout'] = test_timeout
-            
-            # Save to file
-            with open('config.json', 'w') as f:
-                json.dump(self.config, f, indent=4)
-                
-            self.show_success("Proxy settings updated successfully!")
-            
-        except Exception as e:
-            self.show_error(f"Error updating proxy settings: {str(e)}")
-        finally:
-            if self.live:
-                self.live.start()
-
-    def _handle_ui_settings(self):
-        """Handle UI settings menu."""
-        settings_table = Table(show_header=False, box=None)
-        settings_table.add_row(
-            "Refresh Rate:",
-            f"[cyan]{self.config['ui']['refresh_rate']}[/cyan] Hz"
-        )
-        settings_table.add_row(
-            "Show Animations:",
-            f"[cyan]{str(self.config['ui']['show_loading_animations'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Show Progress Bars:",
-            f"[cyan]{str(self.config['ui']['show_progress_bars'])}[/cyan]"
-        )
-        settings_table.add_row(
-            "Compact Mode:",
-            f"[cyan]{str(self.config['ui']['compact_mode'])}[/cyan]"
-        )
-        
-        self.layout["content"].update(Panel(
-            Group(
-                settings_table,
-                Text("\nPress Enter to modify, Esc to go back", style="cyan")
-            ),
-            title="UI Settings",
-            border_style="blue"
-        ))
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input
-        while True:
-            if keyboard.is_pressed('enter'):
-                self._modify_ui_settings()
-                break
-            elif keyboard.is_pressed('esc'):
-                break
-            time.sleep(0.05)
-            
-        self.current_menu = "settings"
-        self.selected_index = 4
-
-    def _modify_ui_settings(self):
-        """Modify UI settings."""
-        if self.live:
-            self.live.stop()
-        
-        try:
-            refresh_rate = int(Prompt.ask("Enter refresh rate (Hz)", default=str(self.config['ui']['refresh_rate'])))
-            show_animations = Confirm.ask("Show loading animations?", default=self.config['ui']['show_loading_animations'])
-            show_progress = Confirm.ask("Show progress bars?", default=self.config['ui']['show_progress_bars'])
-            compact_mode = Confirm.ask("Use compact mode?", default=self.config['ui']['compact_mode'])
-            
-            # Update config
-            self.config['ui']['refresh_rate'] = refresh_rate
-            self.config['ui']['show_loading_animations'] = show_animations
-            self.config['ui']['show_progress_bars'] = show_progress
-            self.config['ui']['compact_mode'] = compact_mode
-            
-            # Save to file
-            with open('config.json', 'w') as f:
-                json.dump(self.config, f, indent=4)
-                
-            self.show_success("UI settings updated successfully!")
-            
-        except Exception as e:
-            self.show_error(f"Error updating UI settings: {str(e)}")
-        finally:
-            if self.live:
-                self.live.start()
-
-    def _create_menu_panel(self) -> Panel:
-        """Create the menu panel with highlighted selection."""
-        menu_items = self.config['ui']['display']['menu'][self.current_menu]
-        menu_text = []
-        
-        for i, item in enumerate(menu_items):
-            if i == self.selected_index:
-                style = self.config['ui']['color_scheme']['menu_selected']
-                menu_text.append(f"[{style}]> {item}[/{style}]")
-            else:
-                style = self.config['ui']['color_scheme']['menu_unselected']
-                menu_text.append(f"[{style}]  {item}[/{style}]")
-        
-        return Panel(
-            "\n".join(menu_text),
-            title=f"{self.current_menu.title()} Menu",
-            border_style=self.config['ui']['color_scheme']['primary']
-        )
-
-    def _update_display(self):
-        """Update only the dynamic parts of the display."""
-        if self.live:
-            # Only update the menu content and sidebar stats
-            self.layout["content"].update(self._create_menu_panel())
-            self.layout["sidebar"].update(self._create_stats_panel())
-
-    def _create_header(self) -> Panel:
-        """Create the header panel."""
-        title = Text("TradeUpTrends", style=f"bold {self.config['ui']['color_scheme']['primary']}")
-        subtitle = Text("CS2 Market Analysis Tool", style=f"italic {self.config['ui']['color_scheme']['secondary']}")
-        
-        return Panel(
-            title + "\n" + subtitle,
-            border_style=self.config['ui']['color_scheme']['primary'],
-            padding=(1, 2),
-            title="Welcome"
-        )
-
-    def show_welcome(self, first_time=False):
-        """Display welcome message and main menu."""
-        if first_time:
-            # Set up initial static elements
-            title = Text("TradeUpTrends", style=f"bold {self.config['ui']['color_scheme']['primary']}")
-            subtitle = Text("CS2 Market Analysis Tool", style=f"italic {self.config['ui']['color_scheme']['secondary']}")
-            
-            header_content = Panel(
-                title + "\n" + subtitle,
-                border_style=self.config['ui']['color_scheme']['primary'],
-                padding=(1, 2),
-                title="Welcome"
-            )
-            
-            self.layout["header"].update(header_content)
-            self.layout["footer"].update(self._create_footer())
-            
-            # Update dynamic elements
-            self.layout["content"].update(self._create_menu_panel())
-            self.layout["sidebar"].update(self._create_stats_panel())
-            
-            # Just wait for enter to start
-            self.console.print("\n[cyan]Press Enter to start...[/cyan]")
-            keyboard.wait('enter')
-            
-            # Clear the initial prompt
-            self.console.clear()
-            self._update_display()
-        else:
-            self._update_display()
-
-    def _create_stats_panel(self) -> Panel:
-        """Create a panel showing current market statistics."""
-        table = Table(show_header=False, padding=(0, 1))
-        table.add_row("Session Start", datetime.now().strftime("%Y-%m-%d %H:%M"))
-        table.add_row("Items Analyzed", str(self.items_analyzed))
-        table.add_row("Market Status", "[green]Online[/green]")
-        
-        return Panel(
-            table,
-            title="Statistics",
+        # Create main panel with all content
+        main_panel = Panel(
+            Align.center("\n".join(str(t) for t in [title, subtitle, description] + sections)),
             border_style="cyan",
+            box=DOUBLE,
+                padding=(1, 2),
+            title="[bold cyan]🎮 Welcome to TradeUpTrends[/bold cyan]",
+            subtitle="[bold blue]v1.0 Beta[/bold blue]"
+        )
+        
+        self.console.print()
+        self.console.print(main_panel)
+        self.console.print()
+
+    def initialize_components(self):
+        """Initialize scraper and calculator components."""
+        try:
+            from temp import items_dict
+            
+            # Create progress bar with custom styling
+            progress = Progress(
+                SpinnerColumn("dots", style="cyan"),
+                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+                BarColumn(complete_style="green", finished_style="bright_green"),
+                expand=True
+            )
+            
+            # Show initialization progress
+            with progress:
+                task = progress.add_task("⚙️  Initializing components...", total=5)
+                
+                # Configure Chrome options
+                chrome_options = uc.ChromeOptions()
+                chrome_options.add_argument('--headless=new')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--no-sandbox')
+                chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--window-size=1920,1080')
+                chrome_options.add_argument('--log-level=3')
+                chrome_options.add_argument('--disable-extensions')
+                chrome_options.add_argument('--disable-popup-blocking')
+                chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+
+                progress.update(task, advance=1, description="🔍 Detecting Chrome installation...")
+                
+                # Get Chrome path for Windows
+                if sys.platform == 'win32':
+                    chrome_paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")
+                    ]
+                    
+                    for path in chrome_paths:
+                        if os.path.exists(path):
+                            chrome_options.binary_location = path
+                            self.console.print(f"[dim]  ✓ Found Chrome at: {path}[/dim]")
+                            break
+                    else:
+                        raise Exception("❌ Chrome browser not found. Please install Chrome.")
+                    
+                    progress.update(task, advance=1, description="📥 Setting up Chrome driver...")
+            
+            progress.update(task, advance=1, description="🔧 Testing driver...")
+            
+            try:
+                # Get Chrome version from registry (Windows-specific)
+                chrome_version = None
+                major_version = None
+                
+                try:
+                    if sys.platform == 'win32':
+                        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon") as key:
+                            chrome_version = winreg.QueryValueEx(key, "version")[0]
+                            self.console.print(f"[dim]  ✓ Detected Chrome version from registry: {chrome_version}[/dim]")
+                            major_version = int(chrome_version.split('.')[0])
+                except Exception as e:
+                    self.logger.warning(f"Failed to get Chrome version from registry: {str(e)}")
+                
+                progress.update(task, advance=1, description="🔧 Testing driver...")
+                
+                # Initialize WebDriver with undetected-chromedriver
+                try:
+                    if major_version:
+                        self.driver = uc.Chrome(
+                            options=chrome_options,
+                            version_main=major_version,
+                            headless=True,
+                            use_subprocess=True
+                        )
+                    else:
+                        self.driver = uc.Chrome(
+                            options=chrome_options,
+                            headless=True,
+                            use_subprocess=True
+                        )
+                    
+                    self.driver.set_page_load_timeout(30)
+                    self.driver.get('about:blank')
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    if hasattr(self, 'driver'):
+                        try:
+                            self.driver.quit()
+                        except:
+                            pass
+                    raise Exception(f"Failed to initialize Chrome driver: {str(e)}")
+                
+                progress.update(task, advance=1, description="🔄 Initializing components...")
+                
+                # Initialize components with the existing driver
+                self.scraper = Scraper(
+                    url=self.config['scraping']['steam_market']['base_url'],
+                    items_dict=items_dict,
+                    driver=self.driver
+                )
+                
+                self.calculator = TradeUpCalculator(self.config)
+                
+                progress.update(task, advance=1, description="✨ Initialization complete!")
+                time.sleep(0.5)  # Small delay for visual effect
+                
+            except Exception as e:
+                # Clean up if initialization fails
+                if hasattr(self, 'driver'):
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
+                
+                # Provide more detailed error information
+                error_msg = str(e)
+                if "WinError 193" in error_msg:
+                    # Get system architecture
+                    is_64bits = platform.machine().endswith('64')
+                    error_msg = (
+                        f"Chrome driver architecture mismatch. Your system is "
+                        f"{'64-bit' if is_64bits else '32-bit'}. "
+                        f"Chrome version: {chrome_version or 'Unknown'}. "
+                        f"Please ensure both Chrome and its driver are 64-bit versions."
+                    )
+                elif "session not created" in error_msg.lower():
+                    error_msg = (
+                        f"Chrome version mismatch. Your Chrome version: {chrome_version or 'Unknown'}. "
+                        f"Please update Chrome to the latest version."
+                    )
+                raise Exception(f"Chrome driver setup failed: {error_msg}")
+            
+            # Show success message
+            self.console.print()
+            self.console.print(Panel(
+                "[bold green]✨ All components initialized successfully![/bold green]",
+                border_style="green",
+                box=DOUBLE,
+                padding=(1, 2)
+            ))
+            self.console.print()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize components: {str(e)}")
+            
+            # Show error panel with better formatting and more specific troubleshooting
+            error_text = [
+                "[bold red]⚠️  Initialization Failed[/bold red]",
+                "",
+                "[bold yellow]Details:[/bold yellow]",
+                f"[red dim]{str(e)}[/red dim]",
+                "",
+                "[bold cyan]Troubleshooting Tips:[/bold cyan]",
+                "[green]✓[/green] Verify Chrome is installed and up to date",
+                "[green]✓[/green] Ensure Chrome version matches your system architecture (32/64-bit)",
+                "[yellow]🔑[/yellow] Try running as administrator",
+                "[blue]🛡️[/blue] Temporarily disable antivirus",
+                "[cyan]🌐[/cyan] Check internet connection",
+                "[magenta]🔄[/magenta] Restart your computer",
+                "",
+                "[dim italic]If the problem persists, please report this error with your system details.[/dim italic]"
+            ]
+            
+            error_panel = Panel(
+                "\n".join(error_text),
+                border_style="red",
+                box=DOUBLE,
+                padding=(1, 2),
+                title="[bold red]❌ Error[/bold red]",
+                subtitle="Need help? Visit our support page"
+            )
+            
+            self.console.print()
+            self.console.print(error_panel)
+            self.console.print()
+            return False
+
+    def __del__(self):
+        """Clean up resources when the object is destroyed."""
+        if not self._cleanup_in_progress:
+            self.cleanup()
+
+    def cleanup(self):
+        """Clean up resources safely."""
+        self._cleanup_in_progress = True
+        try:
+            if hasattr(self, 'driver'):
+                try:
+                    self.driver.close()
+                    time.sleep(0.5)  # Brief pause to allow cleanup
+                    self.driver.quit()
+                except Exception as e:
+                    self.logger.debug(f"Driver cleanup error (safe to ignore): {str(e)}")
+                finally:
+                    self.driver = None
+        except Exception as e:
+            self.logger.debug(f"Final cleanup error (safe to ignore): {str(e)}")
+        finally:
+            self._cleanup_in_progress = False
+
+    def display_weapon_selection(self, weapons: Dict[str, str]) -> str:
+        """Display weapon selection menu and get user choice."""
+        weapons_list = list(weapons.keys())
+        
+        # Create weapon selection layout with multiple tables
+        categories = {
+            "Pistol": ["glock", "usp", "p250", "deagle", "fiveseven", "tec9", "cz75", "revolver", "dualies"],
+            "Rifle": ["ak", "m4a1", "m4a4", "aug", "sg553", "famas", "galilar", "awp", "scout", "scar20", "g3sg1"],
+            "SMG": ["mp5", "mp7", "mp9", "mac10", "ppbizon", "p90", "ump45"],
+            "Heavy": ["nova", "xm1014", "mag7", "sawedoff", "m249", "negev"]
+        }
+        
+        # Category icons and colors
+        category_styles = {
+            "Pistol": ("🔫", "cyan"),
+            "Rifle": ("🎯", "green"),
+            "SMG": ("💨", "yellow"),
+            "Heavy": ("💥", "red")
+        }
+        
+        # Create a table for each category
+        tables = []
+        weapon_index = 1
+        
+        for category, weapons_in_cat in categories.items():
+            icon, color = category_styles[category]
+            
+            table = Table(
+                title=f"[bold {color}]{icon} {category}[/bold {color}]",
+                box=DOUBLE,
+                border_style=color,
+                padding=(0, 2),
+                collapse_padding=True,
+                width=40
+            )
+            
+            table.add_column("ID", style=f"bright_{color}", justify="center", width=4)
+            table.add_column("Weapon", style="bright_white", width=20)
+            table.add_column("Status", style=f"bright_{color}", justify="center", width=10)
+            
+            # Add weapons for this category
+            for weapon in weapons_list:
+                if weapon in weapons_in_cat:
+                    status = "[green]✓[/green]"
+                    table.add_row(
+                        f"[{color}]{weapon_index}[/{color}]",
+                        weapon.upper(),
+                        status
+                    )
+                    weapon_index += 1
+            
+            tables.append(table)
+        
+        # Create a layout with two columns of tables
+        layout = Table.grid(padding=2)
+        layout.add_column("Left", justify="center")
+        layout.add_column("Right", justify="center")
+        
+        # Add tables to layout in pairs
+        for i in range(0, len(tables), 2):
+            row = [tables[i]]
+            if i + 1 < len(tables):
+                row.append(tables[i + 1])
+            else:
+                row.append("")  # Empty cell for odd number of tables
+            layout.add_row(*row)
+        
+        # Create selection panel with enhanced layout
+        @group()
+        def create_menu():
+            yield layout
+            yield Text("")  # Empty line for spacing
+            yield Text("[bold yellow]Navigation:[/bold yellow]")
+            yield Text("🔹 [cyan]Enter number (1-35)[/cyan] or [cyan]weapon name[/cyan] to select")
+            yield Text("🔹 Type [red]'exit'[/red] to quit")
+            yield Text("🔹 Type [yellow]'back'[/yellow] to return")
+            yield Text("")
+            yield Text("[bold yellow]Quick Filters:[/bold yellow]")
+            yield Text("🔹 Type [cyan]'p'[/cyan] for Pistols")
+            yield Text("🔹 Type [cyan]'r'[/cyan] for Rifles")
+            yield Text("🔹 Type [cyan]'s'[/cyan] for SMGs")
+            yield Text("🔹 Type [cyan]'h'[/cyan] for Heavy Weapons")
+        
+        selection_panel = Panel(
+            create_menu(),
+            title="[bold cyan]🎯 Weapon Selection[/bold cyan]",
+            subtitle="[blue]Select a weapon to analyze[/blue]",
+            border_style="cyan",
+            box=DOUBLE,
             padding=(1, 2)
         )
 
-    def _create_footer(self) -> Panel:
-        """Create the footer panel."""
-        controls = [
-            "[blue]↑/↓[/blue]: Navigate",
-            "[blue]Enter[/blue]: Select",
-            "[blue]Esc[/blue]: Back/Exit"
-        ]
-        return Panel(
-            Text(" | ".join(controls), justify="center"),
-            border_style=self.config['ui']['color_scheme']['primary']
-        )
+        self.console.print()
+        self.console.print(selection_panel)
+        
+        while True:
+            choice = Prompt.ask("\n[cyan]Select weapon[/cyan]").lower()
+            
+            if choice == 'exit':
+                    return None
+            elif choice == 'back':
+                return None
+            # Quick filters
+            elif choice in ['p', 'r', 's', 'h']:
+                filter_map = {
+                    'p': 'Pistol',
+                    'r': 'Rifle',
+                    's': 'SMG',
+                    'h': 'Heavy'
+                }
+                filtered_weapons = [w for w in weapons_list 
+                                 if next((cat for cat, weapons in categories.items() 
+                                        if w in weapons), "Other") == filter_map[choice]]
+                if filtered_weapons:
+                    self.console.print(f"\n[cyan]Available {filter_map[choice]}s:[/cyan]")
+                    for i, w in enumerate(filtered_weapons, 1):
+                        self.console.print(f"  {i}. {w.upper()}")
+                continue
 
-    def get_weapon_selection(self, weapons: Dict[str, str]) -> str:
-        """Display weapon selection menu and get user choice."""
-        weapons_list = list(weapons.keys())
-        selected_index = 0
+            try:
+                if choice.isdigit():
+                    index = int(choice) - 1
+                    if 0 <= index < len(weapons_list):
+                        return weapons_list[index]
+                else:
+                    if choice in weapons_list:
+                        return choice
+                        
+                self.console.print("[red]❌ Invalid selection. Please try again.[/red]")
+            except ValueError:
+                self.console.print("[red]❌ Invalid input. Please enter a number or weapon name.[/red]")
+
+    def display_analysis_menu(self) -> str:
+        """Display analysis type selection menu."""
+        menu_panel = Panel(
+            "\n".join([
+                "[bold cyan]Choose Analysis Type:[/bold cyan]",
+                "",
+                "[cyan]1.[/cyan] 📊 [bold white]Market Analysis[/bold white]",
+                "   [dim]• Real-time price tracking[/dim]",
+                "   [dim]• Market trends and statistics[/dim]",
+                "   [dim]• Price distribution analysis[/dim]",
+                "",
+                "[cyan]2.[/cyan] 💹 [bold white]Trade-Up Contracts[/bold white]",
+                "   [dim]• Profitable trade-up finder[/dim]",
+                "   [dim]• Risk assessment[/dim]",
+                "   [dim]• ROI calculator[/dim]",
+                "",
+                "[yellow]Enter your choice (1-2)[/yellow]"
+            ]),
+            title="[bold cyan]🎯 Analysis Options[/bold cyan]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
         
-        # Create initial weapon selection UI
-        table = self._create_weapon_table(weapons_list, selected_index)
+        self.console.print()
+        self.console.print(menu_panel)
         
-        # Update the layout with the weapon selection table
-        self.layout["content"].update(Panel(table, title="Weapon Selection"))
-        self.layout["sidebar"].update(self._create_stats_panel())
-        if self.live:
-            self.live.refresh()
+        while True:
+            choice = Prompt.ask("\n[cyan]Select option[/cyan]")
+            
+            if choice == 'exit':
+                return None
+            elif choice == '1':
+                return 'market'
+            elif choice == '2':
+                return 'trade-up'
+            else:
+                self.console.print("[red]❌ Invalid choice. Please enter 1 or 2.[/red]")
+
+    def get_analysis_options(self) -> Dict[str, Any]:
+        """Get analysis options from user."""
+        options = {}
         
-        # Handle weapon selection input
-        current_time = time.time()
-        last_key_time = current_time
+        # Create options panel
+        options_panel = Panel(
+            "\n".join([
+                "[bold cyan]Analysis Options[/bold cyan]",
+                "",
+                "🌐 [bold white]VPN Settings[/bold white]",
+                "   Enable VPN for scraping (recommended for large analyses)",
+                "",
+                "📄 [bold white]Page Settings[/bold white]",
+                "   Set maximum pages to analyze (0 for all pages)",
+                "",
+                "💰 [bold white]Price Filters[/bold white]",
+                "   Set minimum and maximum price filters",
+                "",
+                "⚙️  [bold white]Other Options[/bold white]",
+                "   Additional analysis settings"
+            ]),
+            title="[bold cyan]⚙️ Configure Analysis[/bold cyan]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
+        
+        self.console.print()
+        self.console.print(options_panel)
+        
+        # Get VPN preference
+        options['use_vpn'] = Confirm.ask("\n[cyan]Enable VPN for analysis?[/cyan]", default=False)
+        
+        # Get page limit
+        while True:
+            try:
+                page_limit = IntPrompt.ask(
+                    "\n[cyan]Maximum pages to analyze (0 for all pages)[/cyan]",
+                    default=0
+                )
+                if page_limit >= 0:
+                    options['page_limit'] = page_limit
+                    break
+                self.console.print("[red]Please enter a non-negative number.[/red]")
+            except ValueError:
+                self.console.print("[red]Please enter a valid number.[/red]")
+        
+        # Get price range
+        while True:
+            try:
+                min_price = float(Prompt.ask(
+                    "\n[cyan]Minimum price filter (USD)[/cyan]",
+                    default="0.0"
+                ))
+                if min_price >= 0:
+                    options['min_price'] = min_price
+                    break
+                self.console.print("[red]Please enter a non-negative number.[/red]")
+            except ValueError:
+                self.console.print("[red]Please enter a valid number.[/red]")
         
         while True:
             try:
-                current_time = time.time()
-                needs_update = False
-                
-                if keyboard.is_pressed('up') and current_time - last_key_time >= self.key_cooldown:
-                    selected_index = (selected_index - 1) % len(weapons_list)
-                    last_key_time = current_time
-                    needs_update = True
-                    
-                elif keyboard.is_pressed('down') and current_time - last_key_time >= self.key_cooldown:
-                    selected_index = (selected_index + 1) % len(weapons_list)
-                    last_key_time = current_time
-                    needs_update = True
-                    
-                elif keyboard.is_pressed('enter') and current_time - last_key_time >= self.key_cooldown:
-                    return weapons_list[selected_index]
-                    
-                elif keyboard.is_pressed('esc') and current_time - last_key_time >= self.key_cooldown:
-                    return None
-                
-                if needs_update:
-                    table = self._create_weapon_table(weapons_list, selected_index)
-                    self.layout["content"].update(Panel(table, title="Weapon Selection"))
-                    if self.live:
-                        self.live.refresh()
-                
-                time.sleep(0.05)
-            except Exception as e:
-                self.logger.exception("Error in weapon selection")
-                return None
-
-    def _create_weapon_table(self, weapons_list: List[str], selected_index: int) -> Table:
-        """Create the weapon selection table."""
-        table = Table(
-            title="Available Weapons",
-            show_header=True,
-            header_style="bold magenta",
-            border_style="blue",
-            title_style="bold cyan"
-        )
+                max_price = float(Prompt.ask(
+                    "\n[cyan]Maximum price filter (USD)[/cyan]",
+                    default="1000.0"
+                ))
+                if max_price > min_price:
+                    options['max_price'] = max_price
+                    break
+                self.console.print("[red]Maximum price must be greater than minimum price.[/red]")
+            except ValueError:
+                self.console.print("[red]Please enter a valid number.[/red]")
         
-        table.add_column("Index", style="cyan", justify="right")
-        table.add_column("Weapon", style="green")
-        table.add_column("Market Items", style="yellow")
-        table.add_column("Price Range", style="blue")
+        # Confirm options
+        self.console.print("\n[bold cyan]Selected Options:[/bold cyan]")
+        self.console.print(f"• VPN Enabled: [{'green' if options['use_vpn'] else 'red'}]{options['use_vpn']}[/]")
+        self.console.print(f"• Page Limit: [yellow]{options['page_limit']} {'(All Pages)' if options['page_limit'] == 0 else 'pages'}[/]")
+        self.console.print(f"• Price Range: [green]${options['min_price']} - ${options['max_price']}[/]")
         
-        for i, weapon in enumerate(weapons_list):
-            style = "bold cyan" if i == selected_index else "white"
-            table.add_row(
-                f"[{style}]{str(i+1)}[/{style}]",
-                f"[{style}]{weapon.upper()}[/{style}]",
-                f"[{style}]Loading...[/{style}]",
-                f"[{style}]$ 0.03 - 1000.00[/{style}]"
-            )
-        
-        return table
-
-    def get_price_range(self) -> tuple:
-        """Get price range for analysis."""
-        # Create a form-like table for price input
-        table = Table(show_header=False, box=None)
-        table.add_row(
-            "Enter minimum price (USD):",
-            f"[cyan]{self.config['analysis']['min_price']}[/cyan]"
-        )
-        table.add_row(
-            "Enter maximum price (USD):",
-            f"[cyan]{self.config['analysis']['max_price']}[/cyan]"
-        )
-        
-        self.layout["content"].update(Panel(table, title="Price Range Selection"))
-        if self.live:
-            self.live.refresh()
-        
-        # Use default values for now - we can implement interactive input later
-        return (
-            self.config['analysis']['min_price'],
-            self.config['analysis']['max_price']
-        )
-
-    def create_progress_bar(self) -> Progress:
-        """Create an enhanced progress bar for scraping operations."""
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            expand=True
-        )
-        
-        # Create a group with the progress bar and stats
-        progress_panel = Panel(
-            Group(
-                progress,
-                Text("\nScraping Statistics:", style="bold cyan"),
-                Text("Pages Processed: 0", style="green"),
-                Text("Items Found: 0", style="yellow"),
-                Text("Average Price: $0.00", style="blue"),
-                Text("Time Elapsed: 0:00", style="magenta")
-            ),
-            title="Market Data Collection",
-            border_style="blue"
-        )
-        
-        # Update the sidebar with the progress panel
-        self.layout["sidebar"].update(progress_panel)
-        if self.live:
-            self.live.refresh()
-        
-        return progress
-
-    def update_scraping_stats(self, stats: Dict[str, Any]):
-        """Update the scraping statistics in the sidebar."""
-        stats_group = Group(
-            Text("\nScraping Statistics:", style="bold cyan"),
-            Text(f"Pages Processed: {stats['pages']}", style="green"),
-            Text(f"Items Found: {stats['items']}", style="yellow"),
-            Text(f"Average Price: ${stats['avg_price']:.2f}", style="blue"),
-            Text(f"Time Elapsed: {stats['elapsed_time']}", style="magenta"),
-            Rule(style="cyan"),
-            Text("\nLatest Items:", style="bold cyan"),
-            *(Text(f"• {item['name']}: {item['price']}", style="white") 
-              for item in stats['recent_items'][-3:])  # Show last 3 items
-        )
-        
-        progress_panel = Panel(
-            stats_group,
-            title="Market Data Collection",
-            border_style="blue"
-        )
-        
-        self.layout["sidebar"].update(progress_panel)
-        if self.live:
-            self.live.refresh()
+        return options
 
     def display_results(self, items: List[Dict[str, Any]]):
-        """Display scraped items in a formatted table with enhanced visuals."""
+        """Display analysis results."""
         if not items:
-            self.show_warning("No items found!")
+            self.console.print(Panel(
+                "[yellow]No items found for analysis![/yellow]",
+                title="[bold yellow]⚠️ Warning[/bold yellow]",
+                border_style="yellow",
+                box=DOUBLE
+            ))
             return
 
         self.items_analyzed += len(items)
         
-        table = Table(
-            title="Market Items Analysis",
-            show_header=True,
-            header_style="bold magenta",
-            border_style="blue",
-            title_style="bold cyan",
-            caption=f"Total Items: {len(items)}"
-        )
-        
-        table.add_column("Name", style="cyan", no_wrap=True)
-        table.add_column("Price", style="green", justify="right")
-        table.add_column("Wear", style="blue")
-        table.add_column("StatTrak", style="magenta", justify="center")
-        table.add_column("Souvenir", style="yellow", justify="center")
-        table.add_column("Profit Potential", style="red", justify="right")
-
-        # Sort items by price for better visualization
-        items.sort(key=lambda x: float(x["price"].replace("$", "").replace(",", "")))
-
-        for item in items:
-            price = float(item["price"].replace("$", "").replace(",", ""))
-            profit_potential = self._calculate_profit_potential(price)
-            
-            table.add_row(
-                item["name"],
-                item["price"],
-                item.get("wear", "N/A"),
-                "✓" if item["stat"] else "✗",
-                "✓" if item["souv"] else "✗",
-                f"{profit_potential:+.2f}%" if profit_potential else "N/A"
-            )
-
-        # Update using existing live context
-        self.layout["content"].update(Panel(table))
-        self.layout["sidebar"].update(self._create_stats_panel())
-        if self.live:
-            self.live.refresh()
-            
-        # Wait for user input while keeping the display
-        while True:
-            if keyboard.is_pressed('enter'):
-                break
-            time.sleep(0.05)
-
-    def display_trade_up_opportunities(self, opportunities: List[TradeUpContract]):
-        """Display trade-up contract opportunities."""
-        if not opportunities:
-            self.show_warning("No profitable trade-up opportunities found!")
-            return
-
-        table = Table(
-            title="Trade-Up Contract Opportunities",
-            show_header=True,
-            header_style="bold magenta",
-            border_style="blue",
-            title_style="bold cyan",
-            caption=f"Total Opportunities: {len(opportunities)}"
-        )
-        
-        table.add_column("Input Items", style="cyan")
-        table.add_column("Potential Outputs", style="green")
-        table.add_column("Cost", style="yellow", justify="right")
-        table.add_column("Expected Value", style="blue", justify="right")
-        table.add_column("Profit", style="red", justify="right")
-        table.add_column("Risk", style="magenta", justify="center")
-        table.add_column("Success", style="green", justify="right")
-
-        for contract in opportunities:
-            input_names = ", ".join(item["name"].split("|")[1].strip() for item in contract.input_items[:3])
-            if len(contract.input_items) > 3:
-                input_names += f" +{len(contract.input_items)-3} more"
-
-            output_names = ", ".join(item["name"].split("|")[1].strip() for item in contract.potential_outputs[:2])
-            if len(contract.potential_outputs) > 2:
-                output_names += f" +{len(contract.potential_outputs)-2} more"
-
-            table.add_row(
-                input_names,
-                output_names,
-                f"${contract.cost:.2f}",
-                f"${contract.expected_value:.2f}",
-                f"{contract.profit_margin:+.1f}%",
-                contract.risk_level,
-                f"{contract.success_chance*100:.0f}%"
-            )
-
-        # Update using existing live context
-        self.layout["content"].update(Panel(table))
-        if self.live:
-            self.live.refresh()
-        
-        # Wait for user input while keeping the display
-        while True:
-            if keyboard.is_pressed('enter'):
-                break
-            time.sleep(0.05)
-
-    def show_detailed_contract(self, contract: TradeUpContract):
-        """Show detailed information about a trade-up contract."""
-        # Input items table
-        input_table = Table(title="Input Items", show_header=True)
-        input_table.add_column("Name", style="cyan")
-        input_table.add_column("Wear", style="blue")
-        input_table.add_column("Price", style="green", justify="right")
-        
-        for item in contract.input_items:
-            input_table.add_row(
-                item["name"],
-                item["wear"],
-                item["price"]
-            )
-
-        # Output items table
-        output_table = Table(title="Potential Outputs", show_header=True)
-        output_table.add_column("Name", style="cyan")
-        output_table.add_column("Wear", style="blue")
-        output_table.add_column("Price", style="green", justify="right")
-        
-        for item in contract.potential_outputs:
-            output_table.add_row(
-                item["name"],
-                item["wear"],
-                item["price"]
-            )
-
-        # Summary table
-        summary_table = Table(show_header=False)
-        summary_table.add_row("Total Cost", f"${contract.cost:.2f}")
-        summary_table.add_row("Expected Value", f"${contract.expected_value:.2f}")
-        summary_table.add_row("Profit Margin", f"{contract.profit_margin:+.1f}%")
-        summary_table.add_row("Risk Level", contract.risk_level)
-        summary_table.add_row("Success Chance", f"{contract.success_chance*100:.0f}%")
-        summary_table.add_row("Float Range", f"{contract.float_range[0]:.3f} - {contract.float_range[1]:.3f}")
-
-        # Update using existing live context
-        self.layout["content"].update(
-            Panel(
-                Columns([input_table, output_table]),
-                title="Trade-Up Contract Details"
-            )
-        )
-        self.layout["sidebar"].update(Panel(summary_table, title="Summary"))
-        if self.live:
-            self.live.refresh()
-        
-        # Wait for user input while keeping the display
-        while True:
-            if keyboard.is_pressed('enter'):
-                break
-            time.sleep(0.05)
-
-    def _calculate_profit_potential(self, price: float) -> float:
-        """Calculate potential profit percentage based on market analysis."""
-        if price < self.config['analysis']['min_price']:
-            return 0
-        if price > self.config['analysis']['max_price']:
-            return 0
-        return ((self.config['analysis']['max_price'] - price) / price) * 100
-
-    def show_market_analysis(self, items: List[Dict[str, Any]]):
-        """Show detailed market analysis."""
-        if not items:
-            return
-
+        # Calculate statistics
         prices = [float(item["price"].replace("$", "").replace(",", "")) for item in items]
         avg_price = sum(prices) / len(prices)
         min_price = min(prices)
         max_price = max(prices)
-
-        # Create wear distribution
-        wear_dist = {}
-        for item in items:
-            wear = item.get("wear", "Unknown")
-            wear_dist[wear] = wear_dist.get(wear, 0) + 1
-
-        # Create price distribution
-        price_ranges = {
-            "< $1": 0,
-            "$1 - $5": 0,
-            "$5 - $10": 0,
-            "$10 - $50": 0,
-            "$50 - $100": 0,
-            "> $100": 0
-        }
+        median_price = sorted(prices)[len(prices)//2]
         
-        for price in prices:
-            if price < 1:
-                price_ranges["< $1"] += 1
-            elif price < 5:
-                price_ranges["$1 - $5"] += 1
-            elif price < 10:
-                price_ranges["$5 - $10"] += 1
-            elif price < 50:
-                price_ranges["$10 - $50"] += 1
-            elif price < 100:
-                price_ranges["$50 - $100"] += 1
-            else:
-                price_ranges["> $100"] += 1
-
-        # Create analysis tables
-        price_table = Table(title="Price Analysis", show_header=False)
-        price_table.add_row("Average Price", f"${avg_price:.2f}")
-        price_table.add_row("Minimum Price", f"${min_price:.2f}")
-        price_table.add_row("Maximum Price", f"${max_price:.2f}")
-        price_table.add_row("Total Items", str(len(items)))
-
-        dist_table = Table(title="Price Distribution")
-        dist_table.add_column("Range", style="cyan")
-        dist_table.add_column("Count", style="green", justify="right")
-        dist_table.add_column("Percentage", style="blue", justify="right")
+        # Create summary panel
+        summary = Panel(
+            "\n".join([
+                "[bold cyan]📊 Market Statistics[/bold cyan]",
+                "",
+                f"[bright_white]Total Items:[/bright_white] [cyan]{len(items)}[/cyan]",
+                f"[bright_white]Average Price:[/bright_white] [green]${avg_price:.2f}[/green]",
+                f"[bright_white]Median Price:[/bright_white] [green]${median_price:.2f}[/green]",
+                f"[bright_white]Price Range:[/bright_white] [green]${min_price:.2f}[/green] - [green]${max_price:.2f}[/green]",
+                "",
+                "[dim]• Prices are in USD[/dim]",
+                "[dim]• Data is real-time from Steam Market[/dim]"
+            ]),
+            title="[bold cyan]📈 Market Analysis[/bold cyan]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
         
-        for price_range, count in price_ranges.items():
-            percentage = (count / len(items)) * 100
-            dist_table.add_row(
-                price_range,
-                str(count),
-                f"{percentage:.1f}%"
+        # Create items table
+        table = Table(
+            title="[bold cyan]🎮 Market Items[/bold cyan]",
+            box=DOUBLE,
+            border_style="cyan",
+            header_style="bold cyan",
+            padding=(0, 1)
+        )
+        
+        table.add_column("Name", style="bright_white")
+        table.add_column("Price", style="green", justify="right")
+        table.add_column("Wear", style="bright_blue")
+        table.add_column("StatTrak", justify="center", style="bright_magenta")
+        table.add_column("Souvenir", justify="center", style="bright_yellow")
+        table.add_column("Trend", justify="center", style="bright_cyan")
+        
+        # Sort items by price
+        sorted_items = sorted(items, key=lambda x: float(x["price"].replace("$", "").replace(",", "")))
+        
+        for item in sorted_items:
+            price_float = float(item["price"].replace("$", "").replace(",", ""))
+            trend = "↗️" if price_float > avg_price else "↘️" if price_float < avg_price else "➡️"
+            
+            table.add_row(
+                item["name"],
+                f"[bold green]${price_float:.2f}[/bold green]",
+                item.get("wear", "N/A"),
+                "✨" if item["stat"] else "❌",
+                "🏆" if item["souv"] else "❌",
+                trend
             )
-
-        wear_table = Table(title="Wear Distribution")
-        wear_table.add_column("Condition", style="cyan")
-        wear_table.add_column("Count", style="green", justify="right")
-        wear_table.add_column("Percentage", style="blue", justify="right")
         
-        for wear, count in wear_dist.items():
-            percentage = (count / len(items)) * 100
-            wear_table.add_row(
-                wear,
-                str(count),
-                f"{percentage:.1f}%"
+        # Display everything
+        self.console.print()
+        self.console.print(summary)
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
+        
+        # Add tips panel
+        tips_panel = Panel(
+            "\n".join([
+                "[bright_white]• Use arrow keys to scroll through items[/bright_white]",
+                "[bright_white]• Press 'Ctrl+C' to copy item data[/bright_white]",
+                "[bright_white]• Items are sorted by price for easy comparison[/bright_white]"
+            ]),
+            title="[bold yellow]💡 Tips[/bold yellow]",
+            border_style="yellow",
+            box=DOUBLE,
+            padding=(1, 1)
+        )
+        self.console.print(tips_panel)
+        self.console.print()
+
+    def display_trade_up_opportunities(self, opportunities: List[TradeUpContract]):
+        """Display trade-up contract opportunities."""
+        if not opportunities:
+            self.console.print(Panel(
+                "[yellow]No profitable trade-up opportunities found![/yellow]\n" +
+                "[dim]Try adjusting your search criteria or analyzing different items.[/dim]",
+                title="[bold yellow]⚠️ No Opportunities[/bold yellow]",
+                border_style="yellow",
+                box=DOUBLE
+            ))
+            return
+
+        # Create summary panel
+        summary = Panel(
+            "\n".join([
+                "[bold cyan]📊 Trade-Up Analysis[/bold cyan]",
+                "",
+                f"[bright_white]Found Opportunities:[/bright_white] [cyan]{len(opportunities)}[/cyan]",
+                f"[bright_white]Best Profit Margin:[/bright_white] [green]{max(o.profit_margin for o in opportunities):+.1f}%[/green]",
+                f"[bright_white]Average ROI:[/bright_white] [green]{sum(o.profit_margin for o in opportunities)/len(opportunities):+.1f}%[/green]",
+                "",
+                "[dim]• All calculations include Steam Market fees[/dim]",
+                "[dim]• Risk levels are based on historical data[/dim]"
+            ]),
+            title="[bold cyan]💹 Trade-Up Summary[/bold cyan]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
+        
+        # Create opportunities table
+        table = Table(
+            title="[bold cyan]🎯 Trade-Up Opportunities[/bold cyan]",
+            box=DOUBLE,
+            border_style="cyan",
+            header_style="bold cyan",
+            padding=(0, 1)
+        )
+        
+        table.add_column("Input Items", style="bright_white")
+        table.add_column("Potential Outputs", style="bright_green")
+        table.add_column("Cost", justify="right", style="bright_blue")
+        table.add_column("Expected Value", justify="right", style="bright_cyan")
+        table.add_column("Profit", justify="right", style="bright_magenta")
+        table.add_column("Risk", justify="center", style="bright_yellow")
+        table.add_column("ROI", justify="center", style="bright_green")
+        
+        # Sort opportunities by profit margin
+        sorted_opps = sorted(opportunities, key=lambda x: x.profit_margin, reverse=True)
+        
+        for contract in sorted_opps:
+            # Format input items
+            input_names = ", ".join(item["name"].split("|")[1].strip() 
+                                  for item in contract.input_items[:3])
+            if len(contract.input_items) > 3:
+                input_names += f" [dim]+{len(contract.input_items)-3} more[/dim]"
+
+            # Format output items
+            output_names = ", ".join(item["name"].split("|")[1].strip() 
+                                   for item in contract.potential_outputs[:2])
+            if len(contract.potential_outputs) > 2:
+                output_names += f" [dim]+{len(contract.potential_outputs)-2} more[/dim]"
+            
+            # Get risk emoji
+            risk_emoji = {
+                "Low Risk": "🟢",
+                "Medium Risk": "🟡",
+                "High Risk": "🔴"
+            }.get(contract.risk_level, "⚪")
+
+            table.add_row(
+                input_names,
+                output_names,
+                f"[bold blue]${contract.cost:.2f}[/bold blue]",
+                f"[bold cyan]${contract.expected_value:.2f}[/bold cyan]",
+                f"[bold magenta]{contract.profit_margin:+.1f}%[/bold magenta]",
+                f"{risk_emoji} {contract.risk_level}",
+                f"[{'green' if contract.profit_margin > 0 else 'red'}]" +
+                f"{'↗️' if contract.profit_margin > 0 else '↘️'} " +
+                f"{abs(contract.profit_margin):.1f}%[/]"
             )
-
-        # Update using existing live context
-        self.layout["content"].update(
-            Panel(
-                Columns([price_table, dist_table]),
-                title="Market Analysis"
-            )
-        )
-        self.layout["sidebar"].update(Panel(wear_table, title="Wear Analysis"))
         
-        # Temporarily suspend live display for input
-        if self.live:
-            self.live.stop()
-        self.console.input("\nPress Enter to continue...")
-        if self.live:
-            self.live.start()
-
-    def confirm_action(self, message: str) -> bool:
-        """Get user confirmation for an action with enhanced visuals."""
-        return Confirm.ask(f"[cyan]{message}[/cyan]")
-
-    def show_error(self, message: str):
-        """Display error message with enhanced visuals."""
-        panel = Panel(
-            f"[red]{message}[/red]",
-            title="Error",
-            border_style="red"
-        )
-        self.layout["content"].update(panel)
-        if self.live:
-            self.live.refresh()
-        time.sleep(2)  # Give user time to read error
-
-    def show_success(self, message: str):
-        """Display success message with enhanced visuals."""
-        panel = Panel(
-            f"[green]{message}[/green]",
-            title="Success",
-            border_style="green"
-        )
-        self.console.print(panel)
-
-    def show_warning(self, message: str):
-        """Display warning message with enhanced visuals."""
-        panel = Panel(
-            f"[yellow]{message}[/yellow]",
-            title="Warning",
-            border_style="yellow"
-        )
-        self.console.print(panel)
-
-    def show_help(self):
-        """Display help information."""
-        help_text = """
-        # TradeUpTrends Help
-
-        ## Features
-        - Real-time market data analysis
-        - Trade-up contract calculator
-        - Profit potential analysis
-        - Risk assessment
-        - Market trends and statistics
-
-        ## Commands
-        - Select weapon by name or index
-        - Set price range for analysis
-        - View market statistics
-        - Analyze trade-up opportunities
-        - View detailed contract information
-
-        ## Tips
-        - Use arrow keys to navigate
-        - Press Ctrl+C to exit
-        - Prices are in USD
-        - Green indicators show profitable opportunities
-        - Risk levels: Low, Medium, High
-        """
+        # Display everything
+        self.console.print()
+        self.console.print(summary)
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
         
-        markdown = Markdown(help_text)
-        self.layout["content"].update(Panel(markdown, title="Help", border_style="blue"))
-        
-        # Temporarily suspend live display for input
-        if self.live:
-            self.live.stop()
-        self.console.input("\nPress Enter to continue...")
-        if self.live:
-            self.live.start()
+        # Add tips panel
+        tips_panel = Panel(
+            "\n".join([
+                "[bright_white]• Green arrows (↗️) indicate profitable opportunities[/bright_white]",
+                "[bright_white]• Risk levels: 🟢 Low, 🟡 Medium, 🔴 High[/bright_white]",
+                "[bright_white]• Click on any row to see detailed contract information[/bright_white]"
+            ]),
+            title="[bold yellow]💡 Tips[/bold yellow]",
+            border_style="yellow",
+            box=DOUBLE,
+            padding=(1, 1)
+        )
+        self.console.print(tips_panel)
+        self.console.print()
 
-    def _find_trade_up_contracts(self):
-        """Handle trade-up contract analysis workflow."""
+    def run(self):
+        """Main program loop."""
         try:
-            if not self.scraper:
-                from scraper import Scraper
-                from temp import items_dict
-                self.scraper = Scraper(self.config['scraping']['base_url'], items_dict)
-
-            if not self.calculator:
-                from trade_up_calculator import TradeUpCalculator
-                self.calculator = TradeUpCalculator(self.config)
-
-            # Get weapon selection
-            weapon = self.get_weapon_selection(self.scraper.items_dict)
-            if not weapon:
+            self.show_welcome()
+            
+            if not self.initialize_components():
                 return
 
-            # Initialize scraping stats
-            stats = {
-                'pages': 0,
-                'items': 0,
-                'avg_price': 0.0,
-                'elapsed_time': '0:00',
-                'recent_items': []
+            while self.running:
+                try:
+                    # Show main menu
+                    choice = self.display_main_menu()
+                    if not choice:
+                        break
+                        
+                    if choice == 'analyze':
+                        self.run_analysis()
+                    elif choice == 'settings':
+                        self.show_settings()
+                    elif choice == 'help':
+                        self.show_help()
+                    elif choice == 'about':
+                        self.show_about()
+                    elif choice == 'exit':
+                        break
+
+                except KeyboardInterrupt:
+                    self.console.print("\nOperation cancelled by user.")
+                    break
+                except Exception as e:
+                    self.logger.exception("Error during operation")
+                    self.console.print(f"[red]Error: {str(e)}[/red]")
+                    if not Prompt.ask("\nContinue?", choices=['y', 'n']) == 'y':
+                        break
+
+        except Exception as e:
+            self.logger.exception("Fatal error occurred")
+            self.console.print(f"[bold red]Fatal Error: {str(e)}[/bold red]")
+        finally:
+            # Show goodbye message with style
+            self.show_goodbye()
+            # Clean up resources
+            self.cleanup()
+
+    def display_main_menu(self) -> str:
+        """Display the main menu and get user choice."""
+        # Create menu with options
+        menu_items = [
+            ("🔍 Analyze", "Start market analysis or find trade-up opportunities"),
+            ("⚙️  Settings", "Configure application settings"),
+            ("❓ Help", "View help documentation and guides"),
+            ("ℹ️  About", "View application information"),
+            ("🚪 Exit", "Exit the application")
+        ]
+        
+        # Create menu table
+        table = Table(
+            title="[bold cyan]🎮 Main Menu[/bold cyan]",
+            box=DOUBLE,
+            border_style="cyan",
+            header_style="bold cyan",
+            padding=(0, 1),
+            show_lines=True
+        )
+        
+        table.add_column("Option", style="bright_cyan", width=15)
+        table.add_column("Description", style="bright_white", width=50)
+        
+        for option, description in menu_items:
+            table.add_row(option, description)
+        
+        # Create menu panel
+        @group()
+        def create_menu():
+            yield table
+            yield Text("")
+            yield Text("[bold yellow]Navigation:[/bold yellow]")
+            yield Text("🔹 Type the [cyan]first letter[/cyan] or [cyan]full name[/cyan] of an option")
+            yield Text("🔹 Press [red]'Ctrl+C'[/red] to exit at any time")
+            yield Text("")
+            yield Text("[bold yellow]Quick Commands:[/bold yellow]")
+            yield Text("🔹 [cyan]'a'[/cyan] or [cyan]'analyze'[/cyan] - Start analysis")
+            yield Text("🔹 [cyan]'s'[/cyan] or [cyan]'settings'[/cyan] - Open settings")
+            yield Text("🔹 [cyan]'h'[/cyan] or [cyan]'help'[/cyan] - View help")
+            yield Text("🔹 [cyan]'i'[/cyan] or [cyan]'about'[/cyan] - View info")
+            yield Text("🔹 [cyan]'e'[/cyan] or [cyan]'exit'[/cyan] - Exit")
+        
+        menu_panel = Panel(
+            create_menu(),
+            title="[bold cyan]🎯 TradeUpTrends[/bold cyan]",
+            subtitle="[blue]Choose an option to continue[/blue]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
+        
+        self.console.print()
+        self.console.print(menu_panel)
+        
+        # Get user choice
+        while True:
+            choice = Prompt.ask("\n[cyan]Select option[/cyan]").lower()
+            
+            # Map single letters to full commands
+            choice_map = {
+                'a': 'analyze',
+                's': 'settings',
+                'h': 'help',
+                'i': 'about',
+                'e': 'exit'
             }
-            start_time = time.time()
-
-            # Show initial progress message
-            self._show_processing_panel(f"Scraping {weapon.upper()} market data...")
-            if self.live:
-                self.live.refresh()
             
-            # Create progress bar
-            progress = self.create_progress_bar()
-            scraping_task = progress.add_task(f"Scraping {weapon.upper()}...", total=100)
+            # Convert single letter to full command if needed
+            if choice in choice_map:
+                choice = choice_map[choice]
             
-            # Scrape items with live UI updates
-            items = []
-            for item in self.scraper.get_items(weapon):
-                items.append(item)
+            if choice in ['analyze', 'settings', 'help', 'about', 'exit']:
+                return choice
+            else:
+                self.console.print("[red]❌ Invalid choice. Please try again.[/red]")
+
+    def run_analysis(self):
+        """Run the analysis workflow."""
+        while True:
+            try:
+                # Get weapon selection
+                weapons_list = list(self.scraper.items_dict.keys())
+                weapon = self.display_weapon_selection(self.scraper.items_dict)
+                if not weapon:
+                    break
+                    
+                # Get analysis type
+                analysis_type = self.display_analysis_menu()
+                if not analysis_type:
+                    break
                 
-                # Update stats
-                stats['items'] = len(items)
-                stats['pages'] = (len(items) - 1) // 10 + 1
-                prices = [float(i['price'].replace('$', '').replace(',', '').replace(' USD', '')) for i in items]
-                stats['avg_price'] = sum(prices) / len(prices)
-                stats['elapsed_time'] = str(datetime.timedelta(seconds=int(time.time() - start_time)))
-                stats['recent_items'] = items[-3:] if len(items) > 3 else items
+                # Get analysis options
+                options = self.get_analysis_options()
                 
-                # Update progress bar and stats
-                progress.update(scraping_task, advance=1)
-                self.update_scraping_stats(stats)
-                if self.live:
-                    self.live.refresh()
+                # Configure scraper with options
+                self.scraper.use_vpn = options['use_vpn']
+                if self.scraper.use_vpn:
+                    self.scraper._init_vpn()
+                
+                # Update config with options
+                self.config['analysis']['price_limits']['min_price_usd'] = options['min_price']
+                self.config['analysis']['price_limits']['max_price_usd'] = options['max_price']
+                self.config['performance']['limits']['max_pages_per_request'] = options['page_limit']
+                
+                # Clear the console before starting analysis
+                self.console.clear()
+                
+                # Perform analysis
+                self.console.print(f"\n[cyan]Analyzing {self.scraper.items_dict[weapon]}...[/cyan]")
+                
+                try:
+                    with self.console.status(f"[cyan]Analyzing {self.scraper.items_dict[weapon]}...[/cyan]") as status:
+                        items = list(self.scraper.get_items(weapon))
+                        
+                        # Filter items by price
+                        items = [item for item in items 
+                                if options['min_price'] <= float(item['price'].replace('$', '').replace(',', '')) <= options['max_price']]
+                        
+                        if analysis_type == 'market':
+                            self.display_results(items)
+                        else:  # trade-up
+                            opportunities = self.calculator.find_trade_up_opportunities(items)
+                            self.display_trade_up_opportunities(opportunities)
+                except Exception as e:
+                    self.logger.error(f"Analysis failed: {str(e)}")
+                    self.console.print(f"[red]Error during analysis: {str(e)}[/red]")
 
-            # Show analysis progress message
-            self._show_processing_panel("Analyzing trade-up opportunities...")
-            if self.live:
-                self.live.refresh()
-
-            # Find trade-up opportunities
-            opportunities = self.calculator.find_trade_up_opportunities(items)
-
-            # Display opportunities
-            self.display_trade_up_opportunities(opportunities)
-
-            # Show detailed analysis for best opportunities
-            for contract in opportunities[:3]:  # Show top 3 opportunities
-                if self.confirm_action("Would you like to see detailed analysis for this trade-up contract?"):
-                    self.show_detailed_contract(contract)
-                else:
+                # Ask to continue
+                if not Prompt.ask("\nAnalyze another weapon?", choices=['y', 'n']) == 'y':
                     break
 
-            # Ask if user wants to continue
-            if not self.confirm_action("Would you like to analyze another weapon?"):
-                self.current_menu = "main"
-                self.selected_index = 0
+            except KeyboardInterrupt:
+                self.console.print("\n[yellow]Operation cancelled by user[/yellow]")
+                break
+            except Exception as e:
+                self.logger.error(f"Error during analysis: {str(e)}")
+                self.console.print(f"[red]Error: {str(e)}[/red]")
+                if not Prompt.ask("\nContinue?", choices=['y', 'n']) == 'y':
+                    break
 
-        except Exception as e:
-            self.logger.exception(f"Error in trade-up analysis")
-            self.show_error(f"Error analyzing trade-up contracts: {str(e)}")
-            time.sleep(2)  # Give user time to read error
-        finally:
-            self.current_menu = "main"
-            self.selected_index = 0
-            self._refresh_all_panels()
-
-    def _analyze_market(self):
-        """Handle market analysis workflow."""
-        try:
-            if not self.scraper:
-                from scraper import Scraper
-                from temp import items_dict
-                
-                def update_progress(progress_info):
-                    # Update the sidebar with progress information
-                    progress_panel = Panel(
-                        Group(
-                            Text(f"\n{progress_info['status']}", style="bold cyan"),
-                            Text(f"Pages: {progress_info['current_page']}/{progress_info['total_pages']}", style="green"),
-                            Text(f"Items Found: {progress_info['items_found']}", style="yellow"),
-                            Text(f"Time Elapsed: {progress_info['elapsed_time']}", style="blue"),
-                            Rule(style="cyan"),
-                            Text("\nRecent Items:", style="bold cyan"),
-                            *(Text(f"• {item['name']}: {item['price']}", style="white") 
-                              for item in progress_info['recent_items'][-3:])
-                        ),
-                        title="Market Analysis Progress",
-                        border_style="blue"
-                    )
-                    self.layout["sidebar"].update(progress_panel)
-                    if self.live and self.live.is_started:
-                        self.live.refresh()
-                
-                self.scraper = Scraper(self.config['scraping']['base_url'], items_dict, progress_callback=update_progress)
-
-            # Get weapon selection
-            weapon = self.get_weapon_selection(self.scraper.items_dict)
-            if not weapon:
-                return
-
-            # Create progress display
-            progress_panel = Panel(
-                Group(
-                    Text("Starting market analysis...", style="cyan"),
-                    Progress(
-                        SpinnerColumn(),
-                        TextColumn("[progress.description]{task.description}"),
-                        BarColumn(bar_width=40),
-                        TaskProgressColumn(),
-                        TimeRemainingColumn(),
-                        expand=True
-                    ),
-                    Text("\nScraping Statistics:", style="bold cyan"),
-                    Text("Pages Processed: 0", style="green"),
-                    Text("Items Found: 0", style="yellow"),
-                    Text("Average Price: $0.00", style="blue"),
-                    Text("Time Elapsed: 0:00", style="magenta")
-                ),
-                title="Market Analysis Progress",
-                border_style="blue"
-            )
-            self.layout["sidebar"].update(progress_panel)
-            if self.live and self.live.is_started:
-                self.live.refresh()
-
-            # Scrape items
-            items = self.scraper.get_items(weapon)
-            
-            if items:
-                # Show market analysis with graphs
-                self.show_market_analysis(items)
-                
-                # Create and show price distribution graph
-                price_graph = self._create_price_distribution_graph(items)
-                self.layout["content"].update(Panel(price_graph, title="Price Distribution"))
-                if self.live:
-                    self.live.refresh()
-                
-                # Create and show wear distribution graph
-                wear_graph = self._create_wear_distribution_graph(items)
-                self.layout["sidebar"].update(Panel(wear_graph, title="Wear Distribution"))
-                if self.live:
-                    self.live.refresh()
-                
-                # Ask if user wants to continue
-                if not self.confirm_action("Would you like to analyze another weapon?"):
-                    self.current_menu = "main"
-                    self.selected_index = 0
-
-        except KeyboardInterrupt:
-            self.logger.info("Market analysis interrupted by user")
-            raise  # Re-raise to let the main loop handle it
-        except Exception as e:
-            self.logger.exception("Error in market analysis")
-            self.show_error(f"Error analyzing market: {str(e)}")
-            time.sleep(2)  # Give user time to read error
-        finally:
-            self.current_menu = "main"
-            self.selected_index = 0
-
-    def _create_price_distribution_graph(self, items: List[Dict[str, Any]]) -> Table:
-        """Create a visual price distribution graph."""
-        prices = [float(item["price"].replace("$", "").replace(",", "")) for item in items]
+    def show_settings(self):
+        """Show settings menu."""
+        settings_panel = Panel(
+            "\n".join([
+                "[bold cyan]Application Settings[/bold cyan]",
+                "",
+                "[cyan]1.[/cyan] 🌐 Network Settings",
+                "   [dim]• Configure proxy and VPN settings[/dim]",
+                "   [dim]• Adjust request timeouts and delays[/dim]",
+                "",
+                "[cyan]2.[/cyan] 📊 Analysis Settings",
+                "   [dim]• Set price range limits[/dim]",
+                "   [dim]• Configure trade-up parameters[/dim]",
+                "",
+                "[cyan]3.[/cyan] 🎨 UI Settings",
+                "   [dim]• Customize appearance[/dim]",
+                "   [dim]• Adjust display options[/dim]",
+                "",
+                "[cyan]4.[/cyan] 📝 Logging Settings",
+                "   [dim]• Set log levels[/dim]",
+                "   [dim]• Configure log file options[/dim]",
+                "",
+                "[yellow]Enter your choice (1-4) or 'back' to return[/yellow]"
+            ]),
+            title="[bold cyan]⚙️  Settings[/bold cyan]",
+            subtitle="[blue]Configure application settings[/blue]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
         
-        # Create price ranges
-        ranges = {
-            "< $1": 0,
-            "$1 - $5": 0,
-            "$5 - $10": 0,
-            "$10 - $50": 0,
-            "$50 - $100": 0,
-            "> $100": 0
-        }
+        self.console.print()
+        self.console.print(settings_panel)
         
-        # Count items in each range
-        for price in prices:
-            if price < 1:
-                ranges["< $1"] += 1
-            elif price < 5:
-                ranges["$1 - $5"] += 1
-            elif price < 10:
-                ranges["$5 - $10"] += 1
-            elif price < 50:
-                ranges["$10 - $50"] += 1
-            elif price < 100:
-                ranges["$50 - $100"] += 1
+        while True:
+            choice = Prompt.ask("\n[cyan]Select option[/cyan]").lower()
+            if choice == 'back':
+                break
+            elif choice in ['1', '2', '3', '4']:
+                self.console.print("[yellow]Settings functionality coming soon![/yellow]")
             else:
-                ranges["> $100"] += 1
-                
-        # Create visual graph
-        max_count = max(ranges.values())
-        graph_width = 40
-        
-        table = Table(show_header=False, box=None)
-        for range_name, count in ranges.items():
-            bar_length = int((count / max_count) * graph_width)
-            bar = "█" * bar_length
-            percentage = (count / len(items)) * 100
-            table.add_row(
-                f"[cyan]{range_name:10}[/cyan]",
-                f"[blue]{bar}[/blue]",
-                f"[green]{count:3}[/green]",
-                f"[yellow]({percentage:5.1f}%)[/yellow]"
-            )
-            
-        return table
+                self.console.print("[red]❌ Invalid choice. Please enter 1-4 or 'back'.[/red]")
 
-    def _create_wear_distribution_graph(self, items: List[Dict[str, Any]]) -> Table:
-        """Create a visual wear distribution graph."""
-        wear_dist = {}
-        for item in items:
-            wear = item.get("wear", "Unknown")
-            wear_dist[wear] = wear_dist.get(wear, 0) + 1
-            
-        # Create visual graph
-        max_count = max(wear_dist.values())
-        graph_width = 20
+    def show_about(self):
+        """Show about information."""
+        about_text = [
+            "[bold cyan]🎮 TradeUpTrends[/bold cyan]",
+            "",
+            "[bright_white]Version:[/bright_white] [cyan]1.0 Beta[/cyan]",
+            "[bright_white]Author:[/bright_white] [cyan]Your Name[/cyan]",
+            "[bright_white]License:[/bright_white] [cyan]MIT[/cyan]",
+            "",
+            "[bold yellow]Description:[/bold yellow]",
+            "TradeUpTrends is an advanced tool for CS2 market analysis and trade-up contract optimization.",
+            "It provides real-time market data analysis and helps find profitable trade-up opportunities.",
+            "",
+            "[bold yellow]Features:[/bold yellow]",
+            "• Real-time market data analysis",
+            "• Smart trade-up contract finder",
+            "• Profit margin calculator",
+            "• Advanced statistical analysis",
+            "",
+            "[bold yellow]Technologies:[/bold yellow]",
+            "• Python 3.11+",
+            "• Selenium WebDriver",
+            "• Rich TUI Framework",
+            "• Steam Market API",
+            "",
+            "[dim italic]Press Enter to return to main menu[/dim italic]"
+        ]
         
-        table = Table(show_header=False, box=None)
-        for wear, count in wear_dist.items():
-            bar_length = int((count / max_count) * graph_width)
-            bar = "█" * bar_length
-            percentage = (count / len(items)) * 100
-            table.add_row(
-                f"[cyan]{wear:15}[/cyan]",
-                f"[blue]{bar}[/blue]",
-                f"[green]{count:3}[/green]",
-                f"[yellow]({percentage:5.1f}%)[/yellow]"
-            )
-            
-        return table
+        about_panel = Panel(
+            "\n".join(about_text),
+            title="[bold cyan]ℹ️  About TradeUpTrends[/bold cyan]",
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
+        
+        self.console.print()
+        self.console.print(about_panel)
+        self.console.input()
 
-    def shutdown(self):
-        """Gracefully shutdown the application."""
-        if self.shutting_down:
-            return
-            
-        self.shutting_down = True
+    def show_goodbye(self):
+        """Show a stylish goodbye message."""
+        goodbye_text = [
+            "[bold cyan]👋 Thanks for using TradeUpTrends![/bold cyan]",
+            "",
+            "[bright_white]We hope you found some profitable opportunities![/bright_white]",
+            "",
+            "[yellow]See you next time! 🚀[/yellow]"
+        ]
         
-        try:
-            # Show shutdown confirmation
-            try:
-                if not self.confirm_action("Are you sure you want to exit?"):
-                    self.shutting_down = False
-                    return
-            except (EOFError, KeyboardInterrupt):
-                pass
-                
-            # Update UI to show shutdown status
-            shutdown_panel = Panel(
-                Group(
-                    Text("\nShutting down gracefully...", style="yellow"),
-                    Text("• Saving application state", style="cyan"),
-                    Text("• Cleaning up resources", style="cyan"),
-                    Text("• Closing connections", style="cyan")
-                ),
-                title="Shutdown in Progress",
-                border_style="yellow"
-            )
-            
-            self.layout["content"].update(shutdown_panel)
-            if self.live:
-                self.live.refresh()
-            
-            # Clean up resources
-            if self.scraper:
-                try:
-                    self.scraper.close()  # Assuming scraper has a close method
-                except:
-                    pass
-                    
-            if self.calculator:
-                try:
-                    self.calculator.close()  # Assuming calculator has a close method
-                except:
-                    pass
-            
-            # Final goodbye message
-            final_panel = Panel(
-                Text("\nThank you for using TradeUpTrends!\n", style="green"),
-                title="Goodbye",
-                border_style="green"
-            )
-            
-            self.layout["content"].update(final_panel)
-            if self.live:
-                self.live.refresh()
-                time.sleep(1)  # Give time to see the message
-                self.live.stop()
-            
-            self.running = False
-        except (EOFError, KeyboardInterrupt):
-            pass 
+        goodbye_panel = Panel(
+            "\n".join(goodbye_text),
+            border_style="cyan",
+            box=DOUBLE,
+            padding=(1, 2)
+        )
+        
+        self.console.print()
+        self.console.print(goodbye_panel)
+        self.console.print()
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    ui = ConsoleUI()
+    ui.run() 

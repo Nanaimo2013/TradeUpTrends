@@ -1,37 +1,134 @@
 items_dict = {
-    "ak": "search?category_730_Weapon%5B0%5D=tag_weapon_ak47",
-    "aug": "search?category_730_Weapon%5B0%5D=tag_weapon_aug",
-    "awp": "search?category_730_Weapon%5B0%5D=tag_weapon_awp",
-    "cz75": "search?category_730_Weapon%5B0%5D=tag_weapon_cz75",
-    "deagle": "search?category_730_Weapon%5B0%5D=tag_weapon_deagle",
-    "dualies": "search?category_730_Weapon%5B0%5D=tag_weapon_elite",
-    "famas": "search?category_730_Weapon%5B0%5D=tag_weapon_famas",
-    "fiveseven": "search?category_730_Weapon%5B0%5D=tag_weapon_fiveseven",
-    "galilar": "search?category_730_Weapon%5B0%5D=tag_weapon_galilar",
-    "g3sg1": "search?category_730_Weapon%5B0%5D=tag_weapon_g3sg1",
-    "glock": "search?category_730_Weapon%5B0%5D=tag_weapon_glock",
-    "knife": "search?category_730_Weapon%5B0%5D=tag_weapon_knife",
-    "m249": "search?category_730_Weapon%5B0%5D=tag_weapon_m249",
-    "m4a1": "search?category_730_Weapon%5B0%5D=tag_weapon_m4a1",
-    "m4a4": "search?category_730_Weapon%5B0%5D=tag_weapon_m4a4",
-    "mac10": "search?category_730_Weapon%5B0%5D=tag_weapon_mac10",
-    "mag7": "search?category_730_Weapon%5B0%5D=tag_weapon_mag7",
-    "mp5": "search?category_730_Weapon%5B0%5D=tag_weapon_mp5sd",
-    "mp7": "search?category_730_Weapon%5B0%5D=tag_weapon_mp7",
-    "mp9": "search?category_730_Weapon%5B0%5D=tag_weapon_mp9",
-    "negev": "search?category_730_Weapon%5B0%5D=tag_weapon_negev",
-    "nova": "search?category_730_Weapon%5B0%5D=tag_weapon_nova",
-    "p250": "search?category_730_Weapon%5B0%5D=tag_weapon_p250",
-    "p90": "search?category_730_Weapon%5B0%5D=tag_weapon_p90",
-    "ppbizon": "search?category_730_Weapon%5B0%5D=tag_weapon_bizon",
-    "revolver": "search?category_730_Weapon%5B0%5D=tag_weapon_revolver",
-    "sawedoff": "search?category_730_Weapon%5B0%5D=tag_weapon_sawedoff",
-    "scar20": "search?category_730_Weapon%5B0%5D=tag_weapon_scar20",
-    "scout": "search?category_730_Weapon%5B0%5D=tag_weapon_scout",
-    "sg553": "search?category_730_Weapon%5B0%5D=tag_weapon_sg556",
-    "ssg08": "search?category_730_Weapon%5B0%5D=tag_weapon_ssg08",
-    "tec9": "search?category_730_Weapon%5B0%5D=tag_weapon_tec9",
-    "ump45": "search?category_730_Weapon%5B0%5D=tag_weapon_ump45",
-    "usp": "search?category_730_Weapon%5B0%5D=tag_weapon_usp",
-    "xm1014": "search?category_730_Weapon%5B0%5D=tag_weapon_xm1014"
+    "ak": {
+        "name": "AK-47",
+        "tag": "ak47"
+    },
+    "aug": {
+        "name": "AUG",
+        "tag": "aug"
+    },
+    "awp": {
+        "name": "AWP",
+        "tag": "awp"
+    },
+    "cz75": {
+        "name": "CZ75-Auto",
+        "tag": "cz75"
+    },
+    "deagle": {
+        "name": "Desert Eagle",
+        "tag": "deagle"
+    },
+    "dualies": {
+        "name": "Dual Berettas",
+        "tag": "elite"
+    },
+    "famas": {
+        "name": "FAMAS",
+        "tag": "famas"
+    },
+    "fiveseven": {
+        "name": "Five-SeveN",
+        "tag": "fiveseven"
+    },
+    "galilar": {
+        "name": "Galil AR",
+        "tag": "galilar"
+    },
+    "g3sg1": {
+        "name": "G3SG1",
+        "tag": "g3sg1"
+    },
+    "glock": {
+        "name": "Glock-18",
+        "tag": "glock"
+    },
+    "m249": {
+        "name": "M249",
+        "tag": "m249"
+    },
+    "m4a1": {
+        "name": "M4A1-S",
+        "tag": "m4a1_silencer"
+    },
+    "m4a4": {
+        "name": "M4A4",
+        "tag": "m4a1"
+    },
+    "mac10": {
+        "name": "MAC-10",
+        "tag": "mac10"
+    },
+    "mag7": {
+        "name": "MAG-7",
+        "tag": "mag7"
+    },
+    "mp5": {
+        "name": "MP5-SD",
+        "tag": "mp5sd"
+    },
+    "mp7": {
+        "name": "MP7",
+        "tag": "mp7"
+    },
+    "mp9": {
+        "name": "MP9",
+        "tag": "mp9"
+    },
+    "negev": {
+        "name": "Negev",
+        "tag": "negev"
+    },
+    "nova": {
+        "name": "Nova",
+        "tag": "nova"
+    },
+    "p250": {
+        "name": "P250",
+        "tag": "p250"
+    },
+    "p90": {
+        "name": "P90",
+        "tag": "p90"
+    },
+    "ppbizon": {
+        "name": "PP-Bizon",
+        "tag": "bizon"
+    },
+    "revolver": {
+        "name": "R8 Revolver",
+        "tag": "revolver"
+    },
+    "sawedoff": {
+        "name": "Sawed-Off",
+        "tag": "sawedoff"
+    },
+    "scar20": {
+        "name": "SCAR-20",
+        "tag": "scar20"
+    },
+    "scout": {
+        "name": "SSG 08",
+        "tag": "ssg08"
+    },
+    "sg553": {
+        "name": "SG 553",
+        "tag": "sg556"
+    },
+    "tec9": {
+        "name": "Tec-9",
+        "tag": "tec9"
+    },
+    "ump45": {
+        "name": "UMP-45",
+        "tag": "ump45"
+    },
+    "usp": {
+        "name": "USP-S",
+        "tag": "usp_silencer"
+    },
+    "xm1014": {
+        "name": "XM1014",
+        "tag": "xm1014"
+    }
 }

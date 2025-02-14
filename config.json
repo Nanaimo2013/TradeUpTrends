@@ -1,43 +1,133 @@
 {
     "scraping": {
-        "base_url": "https://steamcommunity.com/market/listings/730/",
-        "user_agents": [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
-        ],
-        "min_delay": 2.0,
-        "max_delay": 5.0,
-        "max_retries": 10,
-        "request_timeout": 30,
-        "save_progress": true,
-        "progress_file": "scraping_progress.json",
-        "use_vpn": true,
-        "use_proxy": true,
-        "proxy_sources": [
-            "https://raw.githubusercontent.com/TheSpeedX/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-            "https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list/data.txt",
-            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt"
-        ],
-        "proxy_test_url": "http://httpbin.org/ip",
-        "proxy_test_timeout": 10,
-        "min_working_proxies": 5,
-        "proxy_check_interval": 300,
-        "vpn_settings": {
-            "mullvad_path": "C:\\Program Files\\Mullvad VPN\\resources\\mullvad.exe",
-            "preferred_locations": ["us", "ca", "gb", "de", "fr"],
+        "steam_market": {
+            "base_url": "https://steamcommunity.com/market/",
+            "max_items_per_page": 100,
+            "sort_order": "price_asc",
+            "currency": "USD",
+            "language": "english"
+        },
+        "browser": {
+            "user_agents": [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            ],
+            "chrome_paths": {
+                "windows": [
+                    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+                    "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+                ],
+                "linux": [
+                    "/usr/bin/google-chrome",
+                    "/usr/bin/chromium-browser"
+                ],
+                "darwin": [
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                ]
+            },
+            "options": {
+                "headless": true,
+                "disable_gpu": true,
+                "no_sandbox": true,
+                "disable_dev_shm": true,
+                "window_size": {
+                    "width": 1920,
+                    "height": 1080
+                },
+                "log_level": 3,
+                "disable_extensions": true,
+                "disable_popup_blocking": true,
+                "disable_automation": true
+            }
+        },
+        "request": {
+            "min_delay_seconds": 1.5,
+            "max_delay_seconds": 3.0,
+            "max_retries": 5,
+            "timeout_seconds": 20,
+            "retry_delay_base": 10,
+            "retry_delay_max": 60,
+            "exponential_backoff": true
+        },
+        "vpn": {
+            "enabled": false,
+            "provider": "mullvad",
+            "paths": {
+                "windows": "C:\\Program Files\\Mullvad VPN\\resources\\mullvad.exe",
+                "linux": "/usr/bin/mullvad",
+                "darwin": "/Applications/Mullvad VPN.app/Contents/Resources/mullvad"
+            },
+            "locations": {
+                "us": ["qas", "atl", "bos", "chi", "dal", "den", "det", "hou", "lax",
+                      "txc", "mia", "nyc", "phx", "rag", "slc", "sjc", "sea", "uyk", "was"],
+                "eu": ["ams", "ber", "fra", "lon", "par", "sto"],
+                "asia": ["hkg", "sgp", "tok"]
+            },
+            "settings": {
+                "max_used_locations": 10,
+                "connection_timeout": 30,
+                "rotation_interval": 300,
+                "auto_rotate": true,
+                "preferred_regions": ["us", "eu"],
+                "connection_retry_attempts": 3,
+                "connection_retry_delay": 5
+            }
+        },
+        "proxy": {
+            "enabled": false,
+            "test_timeout_seconds": 5,
+            "min_working_proxies": 3,
+            "rotation_interval": 300,
             "auto_rotate": true,
-            "rotate_interval": 600
+            "providers": {
+                "provider1": {
+                    "url": "http://proxy-provider-1.com/api",
+                    "api_key": "YOUR_API_KEY",
+                    "protocol": "http"
+                }
+            }
+        },
+        "data_management": {
+            "save_data": true,
+            "data_directory": "data",
+            "file_format": "json",
+            "compression": false,
+            "backup": {
+                "enabled": true,
+                "interval_hours": 24,
+                "max_backups": 7,
+                "compress_backups": true
+            },
+            "cache": {
+                "enabled": true,
+                "max_age_hours": 24,
+                "max_size_mb": 100
+            }
+        },
+        "error_handling": {
+            "max_consecutive_errors": 5,
+            "error_cooldown_seconds": 300,
+            "retry_on_errors": [
+                "TimeoutError",
+                "ConnectionError",
+                "HTTPError"
+            ],
+            "fatal_errors": [
+                "AuthenticationError",
+                "InvalidConfigError"
+            ]
         }
     },
+
     "analysis": {
-        "min_price": 0.03,
-        "max_price": 100.0,
-        "min_volume": 10,
-        "min_listings": 5,
-        "min_profit_margin": 15.0,
+        "price_limits": {
+            "min_price_usd": 0.10,
+            "max_price_usd": 500.0,
+            "min_daily_volume": 5,
+            "min_active_listings": 3,
+            "min_profit_margin_percent": 10.0
+        },
         "trade_up_rules": {
             "rarity_levels": [
                 "Consumer Grade",
@@ -47,8 +137,10 @@
                 "Classified",
                 "Covert"
             ],
-            "min_float_difference": 0.05,
-            "max_float_difference": 0.15,
+            "float_rules": {
+                "min_difference": 0.05,
+                "max_difference": 0.15
+            },
             "wear_ranges": {
                 "Factory New": [0.00, 0.07],
                 "Minimal Wear": [0.07, 0.15],
@@ -58,23 +150,34 @@
             }
         },
         "filters": {
-            "exclude_stattrak": false,
-            "exclude_souvenir": true,
-            "min_success_chance": 60.0,
+            "include_stattrak": true,
+            "include_souvenir": false,
+            "min_success_chance_percent": 50.0,
             "max_risk_level": "Medium"
         }
     },
+
     "logging": {
-        "file": "app.log",
-        "level": "INFO",
-        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        "max_size": 5242880,
-        "backup_count": 3,
-        "log_to_file": true,
-        "log_to_console": true
+        "settings": {
+            "file_path": "app.log",
+            "level": "INFO",
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "max_size_bytes": 5242880,
+            "backup_count": 3,
+            "file_logging_enabled": true,
+            "console_logging_enabled": true,
+            "log_dir": "logs"
+        },
+        "error_reporting": {
+            "enabled": true,
+            "report_level": "ERROR",
+            "include_traceback": true,
+            "max_reports": 100
+        }
     },
+
     "ui": {
-        "color_scheme": {
+        "colors": {
             "primary": "cyan",
             "secondary": "blue",
             "menu_selected": "bold cyan",
@@ -85,48 +188,32 @@
             "info": "blue"
         },
         "display": {
-            "menu": {
-                "main": [
-                    "Analyze Market",
-                    "Find Trade-Up Contracts",
-                    "Settings",
-                    "Help",
-                    "Exit"
-                ],
-                "settings": [
-                    "Scraping Settings",
-                    "Analysis Settings",
-                    "VPN Settings",
-                    "Proxy Settings",
-                    "UI Settings",
-                    "Back to Main Menu"
-                ],
-                "scraping_settings": [
-                    "Set Delay Range",
-                    "Toggle Progress Saving",
-                    "Set Request Timeout",
-                    "Set Max Retries",
-                    "Back to Settings"
-                ],
-                "analysis_settings": [
-                    "Set Price Range",
-                    "Set Volume Thresholds",
-                    "Set Profit Margins",
-                    "Configure Filters",
-                    "Back to Settings"
-                ]
-            }
-        },
-        "refresh_rate": 4,
-        "show_loading_animations": true,
-        "show_progress_bars": true,
-        "compact_mode": false
+            "refresh_rate_hz": 4,
+            "loading_animations_enabled": true,
+            "progress_bars_enabled": true,
+            "compact_mode_enabled": false,
+            "show_statistics": true,
+            "show_vpn_status": true,
+            "show_proxy_status": true
+        }
     },
+
     "performance": {
-        "max_concurrent_requests": 3,
-        "cache_results": true,
-        "cache_duration": 3600,
-        "max_items_per_page": 100,
-        "max_pages_per_request": 10
+        "limits": {
+            "max_concurrent_requests": 2,
+            "cache_enabled": true,
+            "cache_duration_seconds": 1800,
+            "items_per_page": 50,
+            "max_pages_per_request": 5,
+            "max_scroll_attempts": 10,
+            "scroll_timeout_seconds": 30,
+            "page_load_timeout": 30,
+            "script_timeout": 30
+        },
+        "optimization": {
+            "use_compression": true,
+            "minimize_memory_usage": true,
+            "cleanup_interval": 300
+        }
     }
-} 
+}
